@@ -1,0 +1,83 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.pkl
+*.pklz
+*.pickle
+
+# Virtual environment
+venv/
+.env/
+.env*/
+
+
+# ========================
+# OS & editor files
+# ========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+
+# ========================
+# Logs & runtime output
+# ========================
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+
+
+# ========================
+# Project data folders
+# ========================
+# Raw, processed, OCR, and AI output files should NOT go to Git
+data/raw_documents/*
+data/processed_documents/*
+data/ocr_output/*
+data/ai_output/*
+
+# Keep the folder structure
+!data/raw_documents/.gitkeep
+!data/processed_documents/.gitkeep
+!data/ocr_output/.gitkeep
+!data/ai_output/.gitkeep
+
+
+# ========================
+# Config and Secrets
+# ========================
+# Never commit credentials
+config/*.yml
+!config/paths.yml      # Allowed (no secrets)
+!config/settings.py     # Allowed
+!config/__init__.py
+
+# If you store local overrides
+*.local.yml
+
+# ========================
+# Test cache
+# ========================
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
+
+
+# ========================
+# Build and package artifacts
+# ========================
+dist/
+build/
+*.egg-info/

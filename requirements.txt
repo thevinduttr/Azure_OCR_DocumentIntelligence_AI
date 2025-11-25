@@ -1,0 +1,7 @@
+pypdf
+Pillow
+PyYAML
+pytest
+azure-ai-documentintelligence
+openai
+certifi
