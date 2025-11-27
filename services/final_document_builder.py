@@ -12,7 +12,7 @@ from config.settings import FINAL_DOCUMENTS_DIR, DOC_TYPE_NAME_TO_FILENAME
 def build_final_documents_from_classification(
     merged_pdf_path: Path,
     classified_json_path: Path,
-) -> List[Path]:
+) -> List[Dict[str, Any]]:
     """
     Using the merged PDF and the classified JSON output, create one PDF per document type:
     - Emirates ID document: all pages where Doc Type == configured "Emirates ID"
@@ -21,6 +21,8 @@ def build_final_documents_from_classification(
     - Other Document: all pages where Doc Type == configured "Other Document"
 
     Returns: list of paths to created PDF files.
+    Build one PDF per document type (including Other Document) and
+    return a list of { "doc_type": <name>, "path": <Path> }.
     """
     if not merged_pdf_path.exists():
         raise FileNotFoundError(f"Merged PDF not found: {merged_pdf_path}")
@@ -48,7 +50,7 @@ def build_final_documents_from_classification(
 
     for page_entry in pages_info:
         doc_type = page_entry.get("Doc Type")
-        page_number = page_entry.get("page")  # 1-based page number in JSON
+        page_number = page_entry.get("page")
 
         # Only care about configured doc types (including "Other Document")
         if doc_type not in DOC_TYPE_NAME_TO_FILENAME:
@@ -60,8 +62,7 @@ def build_final_documents_from_classification(
         if 0 <= page_index < len(reader.pages):
             doc_type_to_pages[doc_type].append(page_index)
 
-    created_files: List[Path] = []
-
+    created_docs: List[Dict[str, Any]] = []
     # Build one PDF per configured doc type that has pages
     for doc_type_name, page_indices in doc_type_to_pages.items():
         if not page_indices:
@@ -77,6 +78,11 @@ def build_final_documents_from_classification(
         with output_path.open("wb") as f_out:
             writer.write(f_out)
 
-        created_files.append(output_path)
+        created_docs.append(
+            {
+                "doc_type": doc_type_name,
+                "path": output_path,
+            }
+        )
 
-    return created_files
+    return created_docs

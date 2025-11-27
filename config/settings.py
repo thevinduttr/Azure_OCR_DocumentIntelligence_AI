@@ -9,6 +9,8 @@ PATHS_CONFIG_FILE = PROJECT_ROOT / "config" / "paths.yml"
 AZURE_CONFIG_FILE = PROJECT_ROOT / "config" / "azure.yml"
 AZURE_OPENAI_CONFIG_FILE = PROJECT_ROOT / "config" / "azure_openai.yml"
 DOC_TYPES_CONFIG_FILE = PROJECT_ROOT / "config" / "doc_types.yml"
+STORAGE_CONFIG_FILE = PROJECT_ROOT / "config" / "storage.yml"
+DATABASE_CONFIG_FILE = PROJECT_ROOT / "config" / "database.yml"
 
 
 
@@ -55,13 +57,37 @@ DOC_TYPE_CONFIG = {
     key: {
         "name": val.get("name"),
         "output_filename": val.get("output_filename"),
+        "db_code": val.get("db_code"),
     }
     for key, val in _doc_types_cfg.items()
     if val.get("name") and val.get("output_filename")
 }
 
-# Convenience: map from Doc Type name -> output filename
 DOC_TYPE_NAME_TO_FILENAME = {
     cfg["name"]: cfg["output_filename"]
     for cfg in DOC_TYPE_CONFIG.values()
 }
+
+DOC_TYPE_NAME_TO_DB_CODE = {
+    cfg["name"]: cfg.get("db_code")
+    for cfg in DOC_TYPE_CONFIG.values()
+    if cfg.get("db_code")
+}
+
+# ---- Storage config ----
+_storage_cfg = _load_yaml(STORAGE_CONFIG_FILE).get("storage", {})
+
+BLOB_CONNECTION_STRING = _storage_cfg.get("connection_string")
+BLOB_ACCOUNT_URL = _storage_cfg.get("account_url")
+BLOB_CONTAINER_NAME = _storage_cfg.get("container", "file-container")
+BLOB_PARENT_PREFIX = _storage_cfg.get("parent_prefix", "")          # e.g. 2025/11/12/613690000
+BLOB_PROCESSED_SUBFOLDER = _storage_cfg.get("processed_subfolder", "processed_document")
+
+# ---- Database config ----
+_db_cfg = _load_yaml(DATABASE_CONFIG_FILE).get("database", {})
+
+DB_CONNECTION_STRING = _db_cfg.get("connection_string")
+DB_DEFAULT_SUBMISSION_ID = _db_cfg.get("default_submission_id", 70)
+DB_DEFAULT_REQUEST_ID = _db_cfg.get("default_request_id", 65)
+DB_DEFAULT_OCR_STATUS = _db_cfg.get("default_ocr_status", "SUCCESS")
+DB_STORAGE_RETENTION_DAYS = _db_cfg.get("storage_retention_days")
