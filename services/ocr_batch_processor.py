@@ -1,6 +1,7 @@
-# main.py
+# services/ocr_batch_processor.py
 
 from pathlib import Path
+from typing import Dict, Any, List
 
 from config.settings import RAW_DOCUMENTS_DIR, PROCESSED_PDF_PATH
 from services.db_service import (
@@ -17,43 +18,35 @@ from services.document_classifier import classify_document_from_ocr_json
 from services.final_document_builder import build_final_documents_from_classification
 
 
-def build_local_filename(blob_path: str, content_type: str) -> str:
-    """
-    Build a local filename using BlobPath and ContentType.
-    - If BlobPath already has an extension, keep it.
-    - If not, infer extension from ContentType (pdf/jpeg/png/tiff).
-    """
-    name = Path(blob_path).name
-    stem = Path(name).stem
-    suffix = Path(name).suffix
-
-    if suffix:
-        return name
-
-    ct = (content_type or "").lower()
-
-    if "pdf" in ct:
-        ext = ".pdf"
-    elif "jpeg" in ct or "jpg" in ct:
-        ext = ".jpg"
-    elif "png" in ct:
-        ext = ".png"
-    elif "tif" in ct:
-        ext = ".tif"
-    else:
-        ext = ""
-
-    return stem + ext
-
-
-def clean_raw_documents_folder() -> None:
+def _clean_raw_documents_folder() -> None:
     RAW_DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     for item in RAW_DOCUMENTS_DIR.iterdir():
         if item.is_file():
             item.unlink()
 
+def _content_type_to_extension(content_type: str) -> str:
+    """
+    Map ContentType from DB to a suitable file extension.
+    """
+    ct = (content_type or "").lower().strip()
 
-def extract_parent_prefix_from_blob_path(blob_path: str) -> str:
+    if ct == "application/pdf":
+        return ".pdf"
+    if ct in ("image/jpeg", "image/jpg"):
+        return ".jpg"
+    if ct == "image/png":
+        return ".png"
+    if ct in ("image/tiff", "image/tif"):
+        return ".tiff"
+    if ct == "image/bmp":
+        return ".bmp"
+    if ct == "image/gif":
+        return ".gif"
+
+    # Fallback: default to .bin if unknown
+    return ".bin"
+
+def _extract_parent_prefix_from_blob_path(blob_path: str) -> str:
     """
     e.g. '2025/11/12/613690000/WhatsApp-Image-2025-09-25.jpg'
     -> '2025/11/12/613690000'
@@ -62,8 +55,22 @@ def extract_parent_prefix_from_blob_path(blob_path: str) -> str:
     return parts[0] if len(parts) > 1 else ""
 
 
-def main():
-    # 1) Get next submission based on priority (High -> Medium -> Normal)
+def process_next_submission() -> None:
+    """
+    Process the next available submission based on:
+      - IsProcessed = 0
+      - PriorityLevel: High -> Medium -> Normal
+      - Oldest ReceivedAt in that priority
+
+    Steps:
+      1. Pick one submission.
+      2. Mark IsProcessed = 1.
+      3. Fetch its pending ProcessedDocument rows.
+      4. Download blobs into RAW_DOCUMENTS_DIR.
+      5. Merge -> OCR -> Classify -> Build final docs.
+      6. Upload final docs to blob (under <main_prefix>/processed_document/).
+      7. Insert rows into [dbo].[Documents] using SubmissionId + RequestId.
+    """
     submission = fetch_next_submission_to_process()
     if not submission:
         print("[INFO] No submissions pending for OCR.")
@@ -73,47 +80,45 @@ def main():
     request_id = submission["RequestId"]
     print(f"[INFO] Selected SubmissionId={submission_id}, RequestId={request_id} for processing.")
 
-    # 2) Mark it as taken for processing
+    # Mark as processed immediately (we are taking it for processing)
     mark_submission_as_processed(submission_id)
     print(f"[INFO] Marked SubmissionId={submission_id} as processed (IsProcessed=1).")
 
-    # 3) Get ProcessedDocument rows for this submission & request
+    # Fetch ProcessedDocument rows for this submission/request
     processed_docs = fetch_processed_documents_for(submission_id=submission_id, request_id=request_id)
     if not processed_docs:
         print(f"[WARN] No pending ProcessedDocument rows for SubmissionId={submission_id}, RequestId={request_id}.")
         return
 
-    # 4) Download all source docs to raw_documents folder using correct content type/extension
-    clean_raw_documents_folder()
+    # Clean raw_documents folder and download fresh files there
+    _clean_raw_documents_folder()
 
     for row in processed_docs:
         container = row["BlobContainer"]
         blob_path = row["BlobPath"]
-        content_type = row.get("ContentType") or ""
+        file_name = Path(blob_path).name
+        local_path = RAW_DOCUMENTS_DIR / file_name
 
-        local_name = build_local_filename(blob_path, content_type)
-        local_path = RAW_DOCUMENTS_DIR / local_name
-
-        print(f"  - Downloading {blob_path} ({content_type}) -> {local_path}")
+        print(f"  - Downloading {blob_path} -> {local_path}")
         download_blob_to_file(container=container, blob_path=blob_path, target_path=local_path)
 
-    # 5) Determine parent prefix for upload from first BlobPath
+    # Parent prefix from first doc's BlobPath (common main folder)
     first_blob_path = processed_docs[0]["BlobPath"]
-    parent_prefix = extract_parent_prefix_from_blob_path(first_blob_path)
+    parent_prefix = _extract_parent_prefix_from_blob_path(first_blob_path)
 
-    # 6) Merge all downloaded docs into a single PDF
+    # Merge all raw docs -> single processed PDF
     merged_pdf_path = merge_documents_to_pdf(RAW_DOCUMENTS_DIR, PROCESSED_PDF_PATH)
     print(f"  [OK] Merged PDF: {merged_pdf_path}")
 
-    # 7) OCR with Azure Document Intelligence
+    # OCR
     ocr_json_path = analyze_processed_pdf(merged_pdf_path)
     print(f"  [OK] OCR JSON: {ocr_json_path}")
 
-    # 8) Classification & field extraction using Azure OpenAI
+    # AI classify
     classified_json_path = classify_document_from_ocr_json(ocr_json_path)
     print(f"  [OK] Classified JSON: {classified_json_path}")
 
-    # 9) Build final PDFs by Doc Type (Emirates ID, Driving License, Vehicle Registration, Other)
+    # Build final PDFs by Doc Type (Emirates ID, DL, Mulkiya, Other)
     final_docs = build_final_documents_from_classification(
         merged_pdf_path=merged_pdf_path,
         classified_json_path=classified_json_path,
@@ -121,8 +126,8 @@ def main():
     for d in final_docs:
         print(f"  [OK] Final doc: {d['doc_type']} -> {d['path']}")
 
-    # 10) Upload final PDFs to blob and insert metadata into dbo.Documents
-    rows_to_insert = []
+    # Upload final docs and insert into dbo.Documents
+    rows_to_insert: List[Dict[str, Any]] = []
 
     for d in final_docs:
         doc_type_name = d["doc_type"]
@@ -130,7 +135,7 @@ def main():
 
         blob_info = upload_file_to_blob(
             file_path=file_path,
-            parent_prefix=parent_prefix,  # same main path, under processed_document/
+            parent_prefix=parent_prefix,
             content_type="application/pdf",
         )
 
@@ -144,7 +149,3 @@ def main():
 
     insert_documents(rows_to_insert)
     print(f"  [OK] Uploaded {len(rows_to_insert)} final docs and inserted into [dbo].[Documents].")
-
-
-if __name__ == "__main__":
-    main()

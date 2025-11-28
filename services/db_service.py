@@ -20,6 +20,128 @@ def _get_db_connection():
         raise ValueError("Database connection string is not configured.")
     return pyodbc.connect(DB_CONNECTION_STRING)
 
+def fetch_next_submission_to_process() -> Optional[Dict[str, Any]]:
+    """
+    Get the next submission to process based on:
+      - IsProcessed = 0
+      - PriorityLevel: High -> Medium -> Normal
+      - Earliest ReceivedAt first within same priority
+    Returns a single row dict or None.
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        SELECT TOP (1)
+            Id,
+            RequestId,
+            OutletLinkId,
+            OutletId,
+            CustomerId,
+            Mode,
+            ReceivedAt,
+            OptOutFlag,
+            OptOutRequestedAt,
+            IsProcessed,
+            ProcessedAt,
+            DocumentCount,
+            PriorityLevel,
+            Metadata,
+            IsDeleted,
+            DeletedAt
+        FROM [dbo].[Submissions]
+        WHERE IsProcessed = 0
+          AND (IsDeleted = 0 OR IsDeleted IS NULL)
+        ORDER BY
+            CASE
+                WHEN PriorityLevel = 'High' THEN 1
+                WHEN PriorityLevel = 'Medium' THEN 2
+                ELSE 3
+            END,
+            ReceivedAt ASC
+        """
+        cursor.execute(sql)
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        columns = [c[0] for c in cursor.description]
+        return {col: val for col, val in zip(columns, row)}
+    finally:
+        conn.close()
+
+
+def mark_submission_as_processed(submission_id: int) -> None:
+    """
+    Mark a submission as processed (IsProcessed = 1, ProcessedAt = now).
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        UPDATE [dbo].[Submissions]
+        SET IsProcessed = 1,
+            ProcessedAt = GETUTCDATE()
+        WHERE Id = ? AND IsProcessed = 0
+        """
+        cursor.execute(sql, submission_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_processed_documents_for(submission_id: int, request_id: int) -> List[Dict[str, Any]]:
+    """
+    Get Document rows for a given SubmissionId + RequestId
+    with OcrStatus = 'PENDING'.
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        SELECT
+            DocumentId,
+            SubmissionId,
+            RequestId,
+            DocumentType,
+            BlobUrl,
+            BlobContainer,
+            BlobPath,
+            ContentType,
+            FileSizeBytes,
+            UploadedAt,
+            OcrStatus,
+            StorageRetentionUntil,
+            IsDeleted,
+            DeletedAt
+        FROM [dbo].[Document]
+        WHERE SubmissionId = ?
+          AND RequestId = ?
+          AND OcrStatus = 'PENDING'
+          AND (IsDeleted = 0 OR IsDeleted IS NULL)
+        ORDER BY UploadedAt ASC
+        """
+        cursor.execute(sql, submission_id, request_id)
+
+        columns = [c[0] for c in cursor.description]
+        rows: List[Dict[str, Any]] = []
+        for db_row in cursor.fetchall():
+            row_dict = {col: val for col, val in zip(columns, db_row)}
+            rows.append(row_dict)
+
+        return rows
+    finally:
+        conn.close()
+
 
 def build_document_row(
     *,
@@ -41,8 +163,8 @@ def build_document_row(
     )
 
     return {
-        "SubmissionId": submission_id or DB_DEFAULT_SUBMISSION_ID,
-        "RequestId": request_id or DB_DEFAULT_REQUEST_ID,
+        "SubmissionId": submission_id,
+        "RequestId": request_id,
         "DocumentType": doc_type_code,
         "BlobUrl": blob_info["blob_url"],
         "BlobContainer": blob_info["container"],
@@ -71,7 +193,7 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
     try:
         cursor = conn.cursor()
         sql = """
-        INSERT INTO [dbo].[Documents] (
+        INSERT INTO [dbo].[ProcessedDocument] (
             SubmissionId,
             RequestId,
             DocumentType,

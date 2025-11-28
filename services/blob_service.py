@@ -25,6 +25,16 @@ def _get_blob_service_client() -> BlobServiceClient:
         _blob_client = BlobServiceClient.from_connection_string(BLOB_CONNECTION_STRING)
     return _blob_client
 
+def download_blob_to_file(container: str, blob_path: str, target_path: Path) -> None:
+    service_client = _get_blob_service_client()
+    container_client = service_client.get_container_client(container)
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with target_path.open("wb") as f_out:
+        stream = container_client.download_blob(blob_path)
+        f_out.write(stream.readall())
+
 
 def upload_file_to_blob(
     file_path: Path,
