@@ -50,7 +50,7 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
         api_version=AZURE_OAI_API_VERSION,
     )
 
-    # Build messages (system + user) – using your original prompt
+    # 🔒 Locked-style prompt, extended with extra document types
     chat_prompt = [
         {
             "role": "system",
@@ -59,26 +59,39 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "Your task is to identify the document type on each page and extract relevant fields with varify and into "
                 "a structured JSON format.\n\n"
 
-                "There are four possible document types:\n"
+                "There are nine possible document types:\n"
                 "1. **Emirates ID**\n"
                 "2. **Driving License**\n"
-                "3. **Mulkiya / Vehicle Registration Card**\n"
-                "4. **Other Document** (any page that does not match above types)\n\n"
+                "3. **Mulkiya Front Document**\n"
+                "4. **Mukiya Back Document**\n"
+                "5. **VCC**\n"
+                "6. **PCD/Hyasa**\n"
+                "7. **E Mulkiya**\n"
+                "8. **Other Document** (any page that does not match above types)\n\n"
 
                 "# 🚀 Document Identification Rules\n"
                 "- If the page contains terms like: 'Emirates ID', 'Emirates Identity Authority', 'EmiratesID', 'EID', then Doc Type = 'Emirates ID'.\n"
                 "- If the page contains: 'Driving License', 'Driver License', 'DL No', then Doc Type = 'Driving License'.\n"
-                "- If the page contains: 'Vehicle Registration', 'Mulkiya', 'Chassis No', 'Engine No', 'Vehicle Make', 'Model', then Doc Type = 'Vehicle Registration'.\n"
+                "- If the page is clearly the front side of a Mulkiya with plate, TC number, registration/expiry dates → Doc Type = 'Mulkiya Front Document'.\n"
+                "- If the page is clearly the back side of a Mulkiya with technical data (weights, seats, engine/chassis) → Doc Type = 'Mukiya Back Document'.\n"
+                "- If the page is a Vehicle Conformity Certificate → Doc Type = 'VCC'.\n"
+                "- If the page is a PCD / Hyasa document (port/customs related, showing vehicle import details) → Doc Type = 'PCD/Hyasa'.\n"
+                "- If the page is an electronic Mulkiya (digital/e-card style) → Doc Type = 'E Mulkiya'.\n"
                 "- Otherwise, Doc Type = 'Other Document'.\n\n"
 
                 "# 📄 Output Requirements\n"
                 "Return an object with key `Pages`, containing a list of extracted results.\n"
                 "Each page output must follow this structure:\n\n"
 
+                "### **Common Fields for All Pages**\n"
+                "- page (1-based page number)\n"
+                "- Doc Type (one of the 9 types listed above)\n\n"
+
                 "### **Emirates ID Fields**\n"
                 "- Emirates ID\n"
                 "- Emirates First Name: Always first name in emirate ID\n"
                 "- Emirates Last Name: Except first name all the last name\n"
+                "- Date of Birth\n"
                 "- Nationality\n"
                 "- Gender\n"
                 "- Emirates ID Expiry Date\n"
@@ -87,25 +100,80 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "### **Driving License Fields**\n"
                 "- License Number\n"
                 "- Expiry Date\n"
-                "- Issue Date (if available)\n"
+                "- Issue Date\n"
                 "- Traffic Code\n"
                 "- Place Of Issue\n"
                 "- Category (if available)\n\n"
 
-                "### **Vehicle Registration (Mulkiya) Fields**\n"
+                "### **Mulkiya Front Document Fields**\n"
+                "- Traffic Plate Number and Traffic code\n"
+                "- TC Number\n"
+                "- Exp Date\n"
+                "- Ins. Exp date\n"
+                "- Reg.Date\n"
+                "- Place of issue\n"
+                "- Vehicle Category\n"
+                "- Policy Type\n"
+                "- Plate Number (if clearly shown)\n"
+                "- Plate Color\n\n"
+
+                "### **Mukiya Back Document Fields**\n"
+                "- Model\n"
+                "- No of Pass.\n"
+                "- Origin\n"
+                "- Vehicle Type\n"
+                "- G.V.W\n"
+                "- Empty Weight\n"
+                "- Eng. No\n"
+                "- Chasis No\n"
+                "- Vehicle Type (if repeated)\n"
+                "- Color\n"
+                "- No of Cylinder\n"
+                "- No of Seat\n\n"
+
+                "### **VCC Fields**\n"
+                "- Vehicle Type\n"
+                "- Model Year\n"
+                "- Origin\n"
+                "- Chasis No\n"
+                "- Color\n"
+                "- Engine No\n"
+                "- GCC Standard\n"
+                "- No of Cylinder\n\n"
+
+                "### **PCD/Hyasa Fields**\n"
+                "- TC NO\n"
+                "- Plate Number\n"
+                "- Plate Color\n"
+                "- Vehicle Make\n"
+                "- Vehicle Color\n"
+                "- Country of Origin\n"
+                "- Number of Cylinders\n"
+                "- Model\n"
+                "- Chasisi Number\n"
+                "- Engine Number\n"
+                "- Weight Loaded\n"
+                "- Net Weight\n"
+                "- No of Seats\n"
+                "- Registration date\n\n"
+
+                "### **E Mulkiya Fields**\n"
                 "- Vehicle Year\n"
                 "- Vehicle Make\n"
                 "- Vehicle Model\n"
                 "- Vehicle Color\n"
                 "- Chassis Number\n"
-                "- Engine Number: alphanumeric only, 8–17 characters. First, try to locate the Engine Number field (رقم المحرك). "
-                " If not found or invalid, find the next alphanumeric value that appears after the Chassis Number in the text. "
-                " If still not found or invalid, return empty string."
+                "- Engine Number\n"
                 "- Plate Number\n"
                 "- No of Seat\n"
                 "- No of Cylinder\n"
+                "- Registration Date\n"
+                "- Insurance Expiry Date\n"
+                "- Mulkiya Expiry Date\n"
+                "- Origin\n\n"
+
                 "### **Other Document**\n"
-                "- Only return: \"Doc Type\": \"Other Document\"\n\n"
+                "- Only return: \"page\" and \"Doc Type\": \"Other Document\". Do not include extra fields.\n\n"
 
                 "# ℹ️ Missing Fields\n"
                 "If a field is missing, return empty string.\n\n"
@@ -114,14 +182,16 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "Return JSON strictly in this format:\n\n"
                 "{\n"
                 "  \"Pages\": [\n"
-                "     {\"page\": 1, \"Doc Type\": \"Emirates ID\", \"Emirates ID\": \"\", \"Nationality\": \"\", \"Gender\": \"\", \"Emirates ID Expiry Date\": \"\", \"Emirates ID Issue Date\": \"\"},\n"
-                "     {\"page\": 2, \"Doc Type\": \"Driving License\", \"License Number\": \"\", \"Expiry Date\": \"\", \"Traffic Code\": \"\", \"Place Of Issue\": \"\"},\n"
+                "     {\"page\": 1, \"Doc Type\": \"Emirates ID\", \"Emirates ID\": \"\", \"Emirates First Name\": \"\", \"Emirates Last Name\": \"\", \"Nationality\": \"\", \"Gender\": \"\", \"Emirates ID Expiry Date\": \"\", \"Emirates ID Issue Date\": \"\"},\n"
+                "     {\"page\": 2, \"Doc Type\": \"Driving License\", \"License Number\": \"\", \"Expiry Date\": \"\", \"Issue Date\": \"\", \"Traffic Code\": \"\", \"Place Of Issue\": \"\", \"Category\": \"\"},\n"
                 "     {\"page\": 3, \"Doc Type\": \"Other Document\"},\n"
-                "     {\"page\": 4, \"Doc Type\": \"Vehicle Registration\", \"Vehicle Year\": \"\", \"Vehicle Make\": \"\", \"Vehicle Model\": \"\", \"Vehicle Color\": \"\", \"Chassis Number\": \"\", \"Engine Number\": \"\", \"Plate Number\": \"\", \"No of Seat\": \"\", \"No of Cylinder\": \"\"}\n"
                 "  ]\n"
                 "}\n\n"
 
                 "Always return only the JSON object and no additional text."
+                "- Engine Number: alphanumeric only, 8–17 characters. First, try to locate the Engine Number field (رقم المحرك). "
+                " If not found or invalid, find the next alphanumeric value that appears after the Chassis Number in the text. "
+                " If still not found or invalid, return empty string.\n"
             ),
         },
         {
@@ -134,8 +204,8 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
         completion = client.chat.completions.create(
             model=AZURE_OAI_DEPLOYMENT_NAME,
             messages=chat_prompt,
-            max_tokens=800,
-            temperature=0.8,
+            max_tokens=1200,
+            temperature=0.0,
             top_p=1,
             frequency_penalty=0,
             presence_penalty=0,
@@ -147,8 +217,8 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
 
     try:
         classification_data = json.loads(response_content)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Model response is not valid JSON:\n{response_content}") from e
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Model response is not valid JSON:\n{response_content}")
 
     # Attach token usage if available
     if hasattr(completion, "usage") and completion.usage is not None:

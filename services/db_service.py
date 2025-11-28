@@ -7,13 +7,12 @@ import pyodbc
 
 from config.settings import (
     DB_CONNECTION_STRING,
-    DB_DEFAULT_SUBMISSION_ID,
-    DB_DEFAULT_REQUEST_ID,
     DB_DEFAULT_OCR_STATUS,
     DB_STORAGE_RETENTION_DAYS,
     DOC_TYPE_NAME_TO_DB_CODE,
 )
 
+from utils.date_utils import normalize_date_for_sql
 
 def _get_db_connection():
     if not DB_CONNECTION_STRING:
@@ -123,7 +122,7 @@ def fetch_processed_documents_for(submission_id: int, request_id: int) -> List[D
             StorageRetentionUntil,
             IsDeleted,
             DeletedAt
-        FROM [dbo].[Document]
+        FROM [dbo].[Documents]
         WHERE SubmissionId = ?
           AND RequestId = ?
           AND OcrStatus = 'PENDING'
@@ -182,7 +181,7 @@ def build_document_row(
 
 def insert_documents(rows: List[Dict[str, Any]]) -> None:
     """
-    Insert multiple rows into [dbo].[Documents].
+    Insert multiple rows into [dbo].[ProcessedDocument].
 
     Assumes identity column [DocumentId] is auto-generated (IDENTITY).
     """
@@ -232,5 +231,61 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
             )
 
         conn.commit()
+    finally:
+        conn.close()
+
+
+# List of Customers columns that are datetime/date and come from AI mapping
+DATE_COLUMNS = {
+    "EmiratesIDExpiryDate",
+    "EmiratesIDIssueDate",
+    "LicenseIssueDate",
+    "LicenseExpiryDate",
+    "DateOfFirstRegistration",
+    "InsuranceExpiryDate",
+    "MulkiyaExpiryDate",
+}
+
+
+def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
+    """
+    UPDATE existing [dbo].[Customers] row for the given RequestId,
+    setting only the columns present in `updates`.
+    Date-like columns are converted to ISO 'YYYY-MM-DD' strings using
+    utils.date_utils.normalize_date_for_sql to avoid SQL conversion errors
+    and ODBC 'optional feature not implemented' errors.
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+    if not updates:
+        print("[INFO] No Customers fields to update.")
+        return
+
+    # Normalize values (especially dates)
+    prepared_updates: Dict[str, Any] = {}
+    for col, val in updates.items():
+        if col in DATE_COLUMNS:
+            prepared_updates[col] = normalize_date_for_sql(val)
+        else:
+            prepared_updates[col] = val
+
+    columns: List[str] = list(prepared_updates.keys())
+    set_clause = ", ".join(f"{col} = ?" for col in columns)
+
+    sql = f"""
+        UPDATE [dbo].[Customers]
+        SET {set_clause}, UpdatedAt = GETUTCDATE()
+        WHERE RequestId = ?
+    """
+
+    params: List[Any] = [prepared_updates[col] for col in columns]
+    params.append(request_id)
+
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        conn.commit()
+        print(f"[OK] Updated Customers for RequestId={request_id} (columns: {', '.join(columns)})")
     finally:
         conn.close()

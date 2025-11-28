@@ -11,7 +11,7 @@ AZURE_OPENAI_CONFIG_FILE = PROJECT_ROOT / "config" / "azure_openai.yml"
 DOC_TYPES_CONFIG_FILE = PROJECT_ROOT / "config" / "doc_types.yml"
 STORAGE_CONFIG_FILE = PROJECT_ROOT / "config" / "storage.yml"
 DATABASE_CONFIG_FILE = PROJECT_ROOT / "config" / "database.yml"
-
+CUSTOMER_MAPPING_CONFIG_FILE = PROJECT_ROOT / "config" / "customer_mapping.yml"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -91,3 +91,10 @@ DB_DEFAULT_SUBMISSION_ID = _db_cfg.get("default_submission_id", 70)
 DB_DEFAULT_REQUEST_ID = _db_cfg.get("default_request_id", 65)
 DB_DEFAULT_OCR_STATUS = _db_cfg.get("default_ocr_status", "SUCCESS")
 DB_STORAGE_RETENTION_DAYS = _db_cfg.get("storage_retention_days")
+
+# --- Customer mapping config ----
+_customer_mapping_cfg = _load_yaml(CUSTOMER_MAPPING_CONFIG_FILE).get("customer", {})
+
+CUSTOMER_DOC_TYPES = _customer_mapping_cfg.get("doc_types", {})
+CUSTOMER_VALIDATION = _customer_mapping_cfg.get("validation", {})
+CUSTOMER_FIELD_MAPPING = _customer_mapping_cfg.get("field_mapping", {})

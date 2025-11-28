@@ -5,3 +5,4 @@ pytest
 azure-ai-documentintelligence
 openai
 certifi
+pandas

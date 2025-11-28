@@ -9,12 +9,15 @@ from services.db_service import (
     fetch_processed_documents_for,
     build_document_row,
     insert_documents,
+    update_customers_fields,
 )
 from services.blob_service import download_blob_to_file, upload_file_to_blob
 from services.document_merger import merge_documents_to_pdf
 from services.azure_ocr_client import analyze_processed_pdf
 from services.document_classifier import classify_document_from_ocr_json
 from services.final_document_builder import build_final_documents_from_classification
+from services.customer_data_mapper import build_customer_updates_from_classification
+
 
 
 def build_local_filename(blob_path: str, content_type: str) -> str:
@@ -144,6 +147,20 @@ def main():
 
     insert_documents(rows_to_insert)
     print(f"  [OK] Uploaded {len(rows_to_insert)} final docs and inserted into [dbo].[Documents].")
+
+    # 11) Build Customers field updates from AI classification
+    customer_updates = build_customer_updates_from_classification(
+        classified_json_path=classified_json_path,
+    )
+    print(f"  [OK] Built customer updates: {customer_updates}")
+
+    # 12) Apply updates to existing Customers row for this RequestId
+    update_customers_fields(
+        request_id=request_id,
+        updates=customer_updates,
+    )
+    print(f"  [OK] Updated Customers record for RequestId={request_id}.")
+
 
 
 if __name__ == "__main__":
