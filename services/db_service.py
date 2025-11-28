@@ -244,6 +244,7 @@ DATE_COLUMNS = {
     "DateOfFirstRegistration",
     "InsuranceExpiryDate",
     "MulkiyaExpiryDate",
+    "DateOfBirth"
 }
 
 

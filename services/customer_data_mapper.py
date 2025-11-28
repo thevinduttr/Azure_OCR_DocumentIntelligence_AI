@@ -165,6 +165,34 @@ def _validate_docs_per_group(dfs_by_group: Dict[str, pd.DataFrame]) -> None:
                 print(f"  - Page={row.get('page')} Missing: {', '.join(missing_fields)}")
 
 
+# Define valid DB columns (based on actual [dbo].[Customers] schema)
+VALID_DB_COLUMNS = {
+    "RequestId", "ClientType", "FirstName", "LastName", "Gender", "DateOfBirth", "Age",
+    "EmiratesID", "EmiratesIDExpiryDate", "PaymentOption", "MaritalStatus", "Occupation",
+    "AnnualIncome", "Designation", "PassportNo", "VATRegistrationNumber", "TCFNo", "AMLStatus",
+    "LicenseIssueDate", "LicenseExpiryDate", "LicenseNumber", "LicenseIssuePlace", "Address",
+    "Nationality", "Emirate", "Mobile_CRM", "Email_CRM", "PhoneNumber", "Email",
+    "DrivingLicenseStatus", "EmiratesIDStatus", "VehicleDocType", "VehicleDocStatus",
+    "ProspectRefNo", "BusinessType", "Class", "PolicyType", "Source", "POS", "GenerationDate",
+    "Classification", "SalesUser", "AssignToGroup", "AssignToUser", "Remarks", "Make", "Model",
+    "Variant", "YearOfManufacture", "SeatingCapacity", "BodyType", "FuelType", "PlateCategory",
+    "PlateColor", "VehicleColor", "EngineNumber", "ChassisNumber", "VehicleValue", "BankName",
+    "DateOfFirstRegistration", "IsModified", "IsNonGCC", "IsImportedVehicle", "IsThirdParty",
+    "IsUninsured", "CreatedAt", "UpdatedAt", "AppStatus", "CRMStatus", "QuoteStatus", "NoClaims",
+    "BusinessActivity", "PreviousPolicyType", "VehicleUsage", "CurrentPolicyActive",
+    "IsVehicleAffectedRainFlood", "RoadSideAssistance", "Origin", "LocationRegion", "RepairType",
+    "AccountType", "LocalDrivingExperience", "PABCoverDriver", "PABCoverPassenger",
+    "CustomerTypeLiva", "TotalLoss", "Weight", "POBox", "IdTypeLiva", "Excess", "GrossPremium",
+    "TotalPremium", "VATAmount", "VehicleMilage", "PolicyTypeCRM", "CreditLimit", "CreditDays",
+    "Suspended", "ContactPersonName", "ContactPersonDesignation", "GroupClient", "ClientCode",
+    "CreatedUser", "CreatedByClient", "BrokenPolicy", "NoOfYearsCustomerHasBeenInsured",
+    "Competitor", "Title", "ClientRefNo", "Location", "EmptyWeight", "InsuranceCompany",
+    "VehiclePlateCode", "VehiclePlateNumber", "InsuranceExpiryDate", "MulkiyaExpiryDate",
+    "NoOfCylinders", "EmiratesIDIssueDate", "Priority", "Mileage", "InsuredMobileNumber",
+    "LicenseExperience_CRM", "LeadRefNo"
+}
+
+
 # MAIN ENTRY – RETURN DICT OF {COLUMN → VALUE} FOR DB UPDATE
 def build_customer_updates_from_classification(
     classified_json_path: Path,
@@ -187,6 +215,11 @@ def build_customer_updates_from_classification(
     updates: Dict[str, Any] = {}
 
     for db_column, mapping_entry in CUSTOMER_FIELD_MAPPING.items():
+        # Skip if column doesn't exist in actual DB schema
+        if db_column not in VALID_DB_COLUMNS:
+            print(f"[SKIP] Field '{db_column}' not in DB schema, skipping...")
+            continue
+
         value = _resolve_field_value(
             dfs_by_group=dfs_by_group,
             mapping_entry=mapping_entry,
