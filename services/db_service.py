@@ -235,7 +235,7 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
         conn.close()
 
 
-# List of Customers columns that are datetime/date and come from AI mapping
+# List of Customers columns that are datetime/date
 DATE_COLUMNS = {
     "EmiratesIDExpiryDate",
     "EmiratesIDIssueDate",
@@ -247,14 +247,10 @@ DATE_COLUMNS = {
     "DateOfBirth"
 }
 
-
 def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
     """
-    UPDATE existing [dbo].[Customers] row for the given RequestId,
-    setting only the columns present in `updates`.
-    Date-like columns are converted to ISO 'YYYY-MM-DD' strings using
-    utils.date_utils.normalize_date_for_sql to avoid SQL conversion errors
-    and ODBC 'optional feature not implemented' errors.
+    UPDATE existing [dbo].[Customers] row for the given RequestId.
+    Date columns are normalized using utils.date_utils.normalize_date_for_sql.
     """
     if not DB_CONNECTION_STRING:
         raise ValueError("Database connection string is not configured.")
@@ -287,6 +283,7 @@ def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
         cursor = conn.cursor()
         cursor.execute(sql, params)
         conn.commit()
-        print(f"[OK] Updated Customers for RequestId={request_id} (columns: {', '.join(columns)})")
+        print(f"[OK] Updated Customers for RequestId={request_id}")
+        print(f"     Columns updated: {', '.join(columns)}")
     finally:
         conn.close()

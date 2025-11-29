@@ -93,8 +93,8 @@ DB_DEFAULT_OCR_STATUS = _db_cfg.get("default_ocr_status", "SUCCESS")
 DB_STORAGE_RETENTION_DAYS = _db_cfg.get("storage_retention_days")
 
 # --- Customer mapping config ----
-_customer_mapping_cfg = _load_yaml(CUSTOMER_MAPPING_CONFIG_FILE).get("customer", {})
+_customer_config = _load_yaml(CUSTOMER_MAPPING_CONFIG_FILE).get("customer_mapping", {})
 
-CUSTOMER_DOC_TYPES = _customer_mapping_cfg.get("doc_types", {})
-CUSTOMER_VALIDATION = _customer_mapping_cfg.get("validation", {})
-CUSTOMER_FIELD_MAPPING = _customer_mapping_cfg.get("field_mapping", {})
+CUSTOMER_DOC_TYPES = _customer_config.get("document_types", {})
+CUSTOMER_VALIDATION = _customer_config.get("validation", {})
+CUSTOMER_FIELD_MAPPING = _customer_config.get("database_mapping", {})

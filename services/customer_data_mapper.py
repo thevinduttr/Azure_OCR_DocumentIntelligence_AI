@@ -1,250 +1,242 @@
-# services/customer_data_mapper.py
+"""
+Customer Data Mapper Service
+Loads classified document JSON, validates extracted fields, detects conflicts,
+and builds database updates based on customer_mapping.yml configuration.
+"""
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from config.settings import (
-    CUSTOMER_DOC_TYPES,
-    CUSTOMER_VALIDATION,
-    CUSTOMER_FIELD_MAPPING,
-)
+from config.settings import CUSTOMER_DOC_TYPES, CUSTOMER_FIELD_MAPPING
 
 
-# LOAD CLASSIFICATION JSON
 def _load_classification_json(path: Path) -> Dict[str, Any]:
+    """Load classified JSON file."""
     if not path.exists():
         raise FileNotFoundError(f"Classified JSON not found: {path}")
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
-# GROUP BY DOC TYPE (based on customer_mapping.yml)
-def _group_pages_by_doc_type_group(pages: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def _build_document_dataframes(pages: List[Dict[str, Any]]) -> Dict[str, pd.DataFrame]:
     """
-    Map AI 'Doc Type' into logical groups defined in customer_mapping.yml
+    Build DataFrames organized by document type.
+    Returns: {doc_type: DataFrame} where df columns are the extracted fields.
     """
-    # Build reverse lookup: doc_type_label -> group_key
-    name_to_group: Dict[str, str] = {}
-    for group_key, cfg in CUSTOMER_DOC_TYPES.items():
-        for label in cfg.get("names", []):
-            name_to_group[label] = group_key
-
+    # Build reverse mapping: AI doc type name → config key
+    name_to_key: Dict[str, str] = {}
+    for key, config in CUSTOMER_DOC_TYPES.items():
+        for name in config.get("names", []):
+            name_to_key[name] = key
+    
+    # Group pages by document type
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for page in pages:
-        raw_label = page.get("Doc Type", "").strip()
-        group_key = name_to_group.get(raw_label, "other")
-        grouped.setdefault(group_key, []).append(page)
-    return grouped
-
-
-# BUILD DATAFRAMES PER DOC TYPE GROUP
-def _build_dataframes_by_group(grouped_pages: Dict[str, List[Dict[str, Any]]]) -> Dict[str, pd.DataFrame]:
+        doc_type = page.get("Doc Type", "").strip()
+        config_key = name_to_key.get(doc_type, "other")
+        
+        if config_key == "other":
+            continue  # Skip "Other Document" pages
+        
+        grouped.setdefault(config_key, []).append(page)
+    
+    # Create DataFrames
     dfs: Dict[str, pd.DataFrame] = {}
-    for group_key, pages in grouped_pages.items():
-        if not pages:
-            dfs[group_key] = pd.DataFrame()
-        else:
-            dfs[group_key] = pd.DataFrame(pages)
+    for config_key, page_list in grouped.items():
+        if page_list:
+            dfs[config_key] = pd.DataFrame(page_list)
+    
     return dfs
 
 
-# VALUE PICKING HELPERS
-def _first_non_empty(items: List[Any]) -> Optional[str]:
-    for v in items:
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
-
-
-def _choose_best_latin(items: List[Any]) -> Optional[str]:
+def _validate_document_fields(dfs: Dict[str, pd.DataFrame]) -> None:
     """
-    Prefer values containing Latin letters (English override when Arabic is present).
+    Validate that required fields are present and non-empty for each document.
+    Print missing fields per document page.
     """
-    latin = [v for v in items if isinstance(v, str) and re.search(r'[A-Za-z]', v)]
-    if latin:
-        return latin[0].strip()
-    return _first_non_empty(items)
-
-
-def _choose_best_emirates_id(items: List[Any]) -> Optional[str]:
-    """
-    Prefer IDs with dashes (standard EID formatting)
-    """
-    with_dash = [v for v in items if isinstance(v, str) and "-" in v]
-    if with_dash:
-        return with_dash[0].strip()
-    return _first_non_empty(items)
-
-
-# EXTRACT FIELD FROM A SPECIFIC GROUP
-def _extract_value_from_group(
-    dfs_by_group: Dict[str, pd.DataFrame],
-    doc_type_group: str,
-    field_name: str,
-) -> Optional[str]:
-
-    df = dfs_by_group.get(doc_type_group)
-    if df is None or df.empty:
-        return None
-
-    if field_name not in df.columns:
-        return None
-
-    return _first_non_empty(df[field_name].tolist())
-
-
-# RESOLVE FIELD VALUE BASED ON MAPPING ENTRY
-def _resolve_field_value(
-    dfs_by_group: Dict[str, pd.DataFrame],
-    mapping_entry: Dict[str, Any],
-    db_column_name: str,
-) -> Optional[str]:
-
-    # constant → fixed value
-    constant_value = mapping_entry.get("constant")
-    if constant_value is not None:
-        return constant_value
-
-    sources = mapping_entry.get("sources", [])
-    if not sources:
-        return None
-
-    # special cases
-    if db_column_name == "EmiratesID":
-        candidates = [
-            _extract_value_from_group(dfs_by_group, src["doc_type_group"], src["field"])
-            for src in sources
-        ]
-        return _choose_best_emirates_id(candidates)
-
-    if db_column_name in ("FirstName", "LastName"):
-        candidates = [
-            _extract_value_from_group(dfs_by_group, src["doc_type_group"], src["field"])
-            for src in sources
-        ]
-        return _choose_best_latin(candidates)
-
-    # default: first non-empty of all sources combined
-    for src in sources:
-        v = _extract_value_from_group(dfs_by_group, src["doc_type_group"], src["field"])
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-
-    return None
-
-
-# VALIDATION (PRINT MISSING FIELDS PER DOCUMENT)
-def _validate_docs_per_group(dfs_by_group: Dict[str, pd.DataFrame]) -> None:
-    for group_key, df in dfs_by_group.items():
-        if df is None or df.empty:
+    print("\n" + "="*80)
+    print("DOCUMENT FIELD VALIDATION")
+    print("="*80)
+    
+    for doc_key, df in dfs.items():
+        if df.empty:
             continue
-
-        cfg = CUSTOMER_VALIDATION.get(group_key, {})
-        required = cfg.get("required_fields", [])
-
-        if not required:
+        
+        config = CUSTOMER_DOC_TYPES.get(doc_key, {})
+        required_fields = config.get("required_fields", [])
+        doc_names = config.get("names", [doc_key])
+        doc_name = doc_names[0] if doc_names else doc_key
+        
+        if not required_fields:
+            print(f"\n[{doc_name}] No required fields configured")
             continue
-
-        print(f"[INFO] Validating group: {group_key} (rows={len(df)})")
-
+        
+        print(f"\n[{doc_name}] Validating {len(df)} page(s)")
+        
         for idx, row in df.iterrows():
-            missing_fields: List[str] = []
-
-            for field in required:
-                val = row.get(field)
-                if not isinstance(val, str) or not val.strip():
-                    missing_fields.append(field)
-
-            if missing_fields:
-                print(f"  - Page={row.get('page')} Missing: {', '.join(missing_fields)}")
-
-
-# Define valid DB columns (based on actual [dbo].[Customers] schema)
-VALID_DB_COLUMNS = {
-    "RequestId", "ClientType", "FirstName", "LastName", "Gender", "DateOfBirth", "Age",
-    "EmiratesID", "EmiratesIDExpiryDate", "PaymentOption", "MaritalStatus", "Occupation",
-    "AnnualIncome", "Designation", "PassportNo", "VATRegistrationNumber", "TCFNo", "AMLStatus",
-    "LicenseIssueDate", "LicenseExpiryDate", "LicenseNumber", "LicenseIssuePlace", "Address",
-    "Nationality", "Emirate", "Mobile_CRM", "Email_CRM", "PhoneNumber", "Email",
-    "DrivingLicenseStatus", "EmiratesIDStatus", "VehicleDocType", "VehicleDocStatus",
-    "ProspectRefNo", "BusinessType", "Class", "PolicyType", "Source", "POS", "GenerationDate",
-    "Classification", "SalesUser", "AssignToGroup", "AssignToUser", "Remarks", "Make", "Model",
-    "Variant", "YearOfManufacture", "SeatingCapacity", "BodyType", "FuelType", "PlateCategory",
-    "PlateColor", "VehicleColor", "EngineNumber", "ChassisNumber", "VehicleValue", "BankName",
-    "DateOfFirstRegistration", "IsModified", "IsNonGCC", "IsImportedVehicle", "IsThirdParty",
-    "IsUninsured", "CreatedAt", "UpdatedAt", "AppStatus", "CRMStatus", "QuoteStatus", "NoClaims",
-    "BusinessActivity", "PreviousPolicyType", "VehicleUsage", "CurrentPolicyActive",
-    "IsVehicleAffectedRainFlood", "RoadSideAssistance", "Origin", "LocationRegion", "RepairType",
-    "AccountType", "LocalDrivingExperience", "PABCoverDriver", "PABCoverPassenger",
-    "CustomerTypeLiva", "TotalLoss", "Weight", "POBox", "IdTypeLiva", "Excess", "GrossPremium",
-    "TotalPremium", "VATAmount", "VehicleMilage", "PolicyTypeCRM", "CreditLimit", "CreditDays",
-    "Suspended", "ContactPersonName", "ContactPersonDesignation", "GroupClient", "ClientCode",
-    "CreatedUser", "CreatedByClient", "BrokenPolicy", "NoOfYearsCustomerHasBeenInsured",
-    "Competitor", "Title", "ClientRefNo", "Location", "EmptyWeight", "InsuranceCompany",
-    "VehiclePlateCode", "VehiclePlateNumber", "InsuranceExpiryDate", "MulkiyaExpiryDate",
-    "NoOfCylinders", "EmiratesIDIssueDate", "Priority", "Mileage", "InsuredMobileNumber",
-    "LicenseExperience_CRM", "LeadRefNo"
-}
+            page_num = row.get("page", "?")
+            missing = []
+            
+            for field in required_fields:
+                value = row.get(field, "")
+                if not isinstance(value, str) or not value.strip():
+                    missing.append(field)
+            
+            if missing:
+                print(f"  ❌ Page {page_num}: Missing fields → {', '.join(missing)}")
+            else:
+                print(f"  ✅ Page {page_num}: All required fields present")
 
 
-# MAIN ENTRY – RETURN DICT OF {COLUMN → VALUE} FOR DB UPDATE
+def _extract_field_with_priority(
+    dfs: Dict[str, pd.DataFrame],
+    sources: List[Dict[str, Any]],
+    db_column: str
+) -> Optional[str]:
+    """
+    Extract field value from multiple sources based on priority.
+    Detects conflicts when multiple documents have different values.
+    Returns: (value, conflicts_detected)
+    """
+    # Sort sources by priority (lower number = higher priority)
+    sorted_sources = sorted(sources, key=lambda x: x.get("priority", 999))
+    
+    values: List[tuple[str, str, int]] = []  # (value, doc_type, priority)
+    
+    for source in sorted_sources:
+        doc_type = source["document"]
+        field_name = source["field"]
+        priority = source.get("priority", 999)
+        
+        # Find matching document in dfs
+        doc_key = _find_doc_key_by_name(doc_type)
+        if not doc_key or doc_key not in dfs:
+            continue
+        
+        df = dfs[doc_key]
+        if field_name not in df.columns:
+            continue
+        
+        # Get first non-empty value from this document
+        for value in df[field_name]:
+            if isinstance(value, str) and value.strip():
+                values.append((value.strip(), doc_type, priority))
+                break
+    
+    if not values:
+        return None
+    
+    # Check for conflicts (different values from different documents)
+    if len(values) > 1:
+        unique_values = set(v[0] for v in values)
+        if len(unique_values) > 1:
+            _print_conflict(db_column, values)
+    
+    # Return highest priority value
+    return values[0][0]
+
+
+def _find_doc_key_by_name(doc_name: str) -> Optional[str]:
+    """Find document config key by AI document type name."""
+    for key, config in CUSTOMER_DOC_TYPES.items():
+        if doc_name in config.get("names", []):
+            return key
+    return None
+
+
+def _print_conflict(db_column: str, values: List[tuple[str, str, int]]) -> None:
+    """Print conflict warning when same field has different values from different documents."""
+    print(f"\n⚠️  CONFLICT DETECTED for '{db_column}':")
+    for value, doc_type, priority in values:
+        marker = "✓ USING" if priority == values[0][2] else "✗ IGNORED"
+        print(f"    {marker} [{doc_type}] = '{value}' (priority: {priority})")
+
+
+def _apply_transform(value: Optional[str], transform: Optional[str]) -> Any:
+    """Apply transformation to extracted value."""
+    if value is None or transform is None:
+        return value
+    
+    if transform == "invert_yes_no":
+        # "Yes" → False (is GCC), empty/other → True (non-GCC)
+        return False if value.lower() == "yes" else True
+    
+    return value
+
+
 def build_customer_updates_from_classification(
     classified_json_path: Path,
 ) -> Dict[str, Any]:
-
-    # 1) Load classified JSON
+    """
+    Main entry point: Load classified JSON, validate, extract, and build DB updates.
+    Returns: Dict of {DB_Column: value} ready for database update.
+    """
+    # 1. Load classified JSON
     data = _load_classification_json(classified_json_path)
     pages = data.get("Pages", [])
     if not isinstance(pages, list):
         pages = []
-
-    # 2) Group & df build
-    grouped = _group_pages_by_doc_type_group(pages)
-    dfs_by_group = _build_dataframes_by_group(grouped)
-
-    # 3) Validate docs (log only)
-    _validate_docs_per_group(dfs_by_group)
-
-    # 4) Build result dict
+    
+    print(f"\n📄 Loaded {len(pages)} pages from classification JSON")
+    
+    # 2. Build document-wise DataFrames
+    dfs = _build_document_dataframes(pages)
+    
+    print(f"📊 Created DataFrames for {len(dfs)} document types:")
+    for doc_key, df in dfs.items():
+        doc_names = CUSTOMER_DOC_TYPES.get(doc_key, {}).get("names", [doc_key])
+        doc_name = doc_names[0] if doc_names else doc_key
+        print(f"   - {doc_name}: {len(df)} page(s)")
+    
+    # 3. Validate document fields (prints missing fields)
+    _validate_document_fields(dfs)
+    
+    # 4. Extract and map to database columns
+    print("\n" + "="*80)
+    print("DATABASE FIELD EXTRACTION")
+    print("="*80 + "\n")
+    
     updates: Dict[str, Any] = {}
-
-    for db_column, mapping_entry in CUSTOMER_FIELD_MAPPING.items():
-        # Skip if column doesn't exist in actual DB schema
-        if db_column not in VALID_DB_COLUMNS:
-            print(f"[SKIP] Field '{db_column}' not in DB schema, skipping...")
-            continue
-
-        value = _resolve_field_value(
-            dfs_by_group=dfs_by_group,
-            mapping_entry=mapping_entry,
-            db_column_name=db_column,
-        )
+    
+    for db_column, mapping in CUSTOMER_FIELD_MAPPING.items():
+        sources = mapping.get("sources", [])
+        transform = mapping.get("transform")
         
-        # Only include values that are actually extracted (not None, not empty string, not hardcoded constants)
-        if value is not None and isinstance(value, str) and value.strip():
-            updates[db_column] = value.strip()
-        elif value is not None and not isinstance(value, str):
-            # For non-string values (if any), include them as-is
+        if not sources:
+            continue
+        
+        value = _extract_field_with_priority(dfs, sources, db_column)
+        value = _apply_transform(value, transform)
+        
+        if value is not None and value != "":
             updates[db_column] = value
-
-    # 5) Additional global warnings for essential fields
-    essential_fields = [
-        "FirstName", "LastName", "Gender", "Nationality",
-        "EmiratesID", "EmiratesIDExpiryDate",
-        "LicenseNumber", "LicenseExpiryDate",
-        "Make", "Model", "YearOfManufacture",
-        "ChassisNumber", "EngineNumber",
-    ]
-    missing = [f for f in essential_fields if not updates.get(f)]
-    if missing:
-        print("[WARN] Missing essential customer fields →")
-        for f in missing:
-            print(f"   - {f}")
-
+            print(f"✓ {db_column}: {value}")
+        else:
+            print(f"✗ {db_column}: <empty>")
+    
+    # 5. Final validation summary
+    print("\n" + "="*80)
+    print("EXTRACTION SUMMARY")
+    print("="*80)
+    
+    essential = ["FirstName", "LastName", "Gender", "Nationality", "EmiratesID",
+                 "EmiratesIDExpiryDate", "LicenseNumber", "LicenseExpiryDate",
+                 "Make", "Model", "YearOfManufacture", "ChassisNumber", "EngineNumber"]
+    
+    missing_essential = [f for f in essential if f not in updates or not updates[f]]
+    
+    if missing_essential:
+        print(f"\n⚠️  WARNING: Missing {len(missing_essential)} essential fields:")
+        for field in missing_essential:
+            print(f"   - {field}")
+    else:
+        print("\n✅ All essential fields extracted successfully!")
+    
+    print(f"\n📊 Total fields extracted: {len(updates)}")
+    
     return updates
