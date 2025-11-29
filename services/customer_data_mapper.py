@@ -225,10 +225,13 @@ def build_customer_updates_from_classification(
             mapping_entry=mapping_entry,
             db_column_name=db_column,
         )
-        if value is not None and isinstance(value, str):
-            value = value.strip()
-
-        updates[db_column] = value
+        
+        # Only include values that are actually extracted (not None, not empty string, not hardcoded constants)
+        if value is not None and isinstance(value, str) and value.strip():
+            updates[db_column] = value.strip()
+        elif value is not None and not isinstance(value, str):
+            # For non-string values (if any), include them as-is
+            updates[db_column] = value
 
     # 5) Additional global warnings for essential fields
     essential_fields = [
