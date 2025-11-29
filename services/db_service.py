@@ -179,11 +179,85 @@ def build_document_row(
     }
 
 
+def check_document_exists(request_id: int, document_type: str) -> Optional[int]:
+    """
+    Check if a document exists for the given RequestId and DocumentType.
+    Returns the DocumentId if exists, None otherwise.
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+    
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        SELECT DocumentId
+        FROM [dbo].[ProcessedDocument]
+        WHERE RequestId = ?
+          AND DocumentType = ?
+          AND (IsDeleted = 0 OR IsDeleted IS NULL)
+        """
+        cursor.execute(sql, request_id, document_type)
+        row = cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def update_document(document_id: int, row: Dict[str, Any]) -> None:
+    """
+    Update an existing document record in [dbo].[ProcessedDocument].
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+    
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        UPDATE [dbo].[ProcessedDocument]
+        SET BlobUrl = ?,
+            BlobContainer = ?,
+            BlobPath = ?,
+            FileName = ?,
+            ContentType = ?,
+            FileSizeBytes = ?,
+            UploadedAt = ?,
+            OcrStatus = ?,
+            StorageRetentionUntil = ?,
+            IsDeleted = ?,
+            DeletedAt = ?
+        WHERE DocumentId = ?
+        """
+        cursor.execute(
+            sql,
+            row["BlobUrl"],
+            row["BlobContainer"],
+            row["BlobPath"],
+            row["FileName"],
+            row["ContentType"],
+            row["FileSizeBytes"],
+            row["UploadedAt"],
+            row["OcrStatus"],
+            row["StorageRetentionUntil"],
+            row["IsDeleted"],
+            row["DeletedAt"],
+            document_id,
+        )
+        conn.commit()
+        print(f"[OK] Updated existing document (DocumentId={document_id})")
+    finally:
+        conn.close()
+
+
 def insert_documents(rows: List[Dict[str, Any]]) -> None:
     """
-    Insert multiple rows into [dbo].[ProcessedDocument].
-
-    Assumes identity column [DocumentId] is auto-generated (IDENTITY).
+    Insert or update multiple rows into [dbo].[ProcessedDocument].
+    
+    For each row:
+    - Check if a document exists with the same RequestId and DocumentType
+    - If exists: update the existing record
+    - If not exists: insert a new record
     """
     if not rows:
         return
@@ -191,46 +265,59 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
     conn = _get_db_connection()
     try:
         cursor = conn.cursor()
-        sql = """
-        INSERT INTO [dbo].[ProcessedDocument] (
-            SubmissionId,
-            RequestId,
-            DocumentType,
-            BlobUrl,
-            BlobContainer,
-            BlobPath,
-            FileName,
-            ContentType,
-            FileSizeBytes,
-            UploadedAt,
-            OcrStatus,
-            StorageRetentionUntil,
-            IsDeleted,
-            DeletedAt
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-
+        
         for row in rows:
-            cursor.execute(
-                sql,
-                row["SubmissionId"],
-                row["RequestId"],
-                row["DocumentType"],
-                row["BlobUrl"],
-                row["BlobContainer"],
-                row["BlobPath"],
-                row["FileName"],
-                row["ContentType"],
-                row["FileSizeBytes"],
-                row["UploadedAt"],
-                row["OcrStatus"],
-                row["StorageRetentionUntil"],
-                row["IsDeleted"],
-                row["DeletedAt"],
-            )
-
-        conn.commit()
+            request_id = row["RequestId"]
+            document_type = row["DocumentType"]
+            
+            # Check if document exists
+            existing_doc_id = check_document_exists(request_id, document_type)
+            
+            if existing_doc_id:
+                # Update existing document
+                print(f"[INFO] Document exists (RequestId={request_id}, DocumentType={document_type}). Updating...")
+                update_document(existing_doc_id, row)
+            else:
+                # Insert new document
+                print(f"[INFO] Document does not exist (RequestId={request_id}, DocumentType={document_type}). Inserting...")
+                sql = """
+                INSERT INTO [dbo].[ProcessedDocument] (
+                    SubmissionId,
+                    RequestId,
+                    DocumentType,
+                    BlobUrl,
+                    BlobContainer,
+                    BlobPath,
+                    FileName,
+                    ContentType,
+                    FileSizeBytes,
+                    UploadedAt,
+                    OcrStatus,
+                    StorageRetentionUntil,
+                    IsDeleted,
+                    DeletedAt
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                cursor.execute(
+                    sql,
+                    row["SubmissionId"],
+                    row["RequestId"],
+                    row["DocumentType"],
+                    row["BlobUrl"],
+                    row["BlobContainer"],
+                    row["BlobPath"],
+                    row["FileName"],
+                    row["ContentType"],
+                    row["FileSizeBytes"],
+                    row["UploadedAt"],
+                    row["OcrStatus"],
+                    row["StorageRetentionUntil"],
+                    row["IsDeleted"],
+                    row["DeletedAt"],
+                )
+                conn.commit()
+                print(f"[OK] Inserted new document (RequestId={request_id}, DocumentType={document_type})")
     finally:
         conn.close()
 
