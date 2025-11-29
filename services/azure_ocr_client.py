@@ -87,4 +87,50 @@ def analyze_processed_pdf(pdf_path: Path) -> Path:
     with output_json_path.open("w", encoding="utf-8") as out_file:
         json.dump(output, out_file, indent=4, ensure_ascii=False)
 
-    return output_json_path
+    print(f"[INFO] Full OCR JSON saved: {output_json_path}")
+
+    # Create simplified version for AI to reduce token usage
+    simplified_output = convert_to_simplified_format(output)
+    simplified_json_path = OCR_OUTPUT_DIR / f"{pdf_path.stem}_simplified.json"
+    with simplified_json_path.open("w", encoding="utf-8") as out_file:
+        json.dump(simplified_output, out_file, indent=4, ensure_ascii=False)
+
+    print(f"[INFO] Simplified OCR JSON saved: {simplified_json_path}")
+    print(f"[INFO] Token optimization: Using simplified format for AI processing")
+
+    return simplified_json_path
+
+
+def convert_to_simplified_format(ocr_data: dict) -> dict:
+    """
+    Convert full OCR output to simplified format with only page number and text content.
+    This reduces token usage when sending to Azure OpenAI.
+    
+    Input format:
+    {
+        "FileName": "...",
+        "PageCount": N,
+        "Pages": [{"PageNumber": 1, "Text": "..."}],
+        "FullText": "..."
+    }
+    
+    Output format:
+    {
+        "Pages": [
+            {"page": 1, "page_content": "..."},
+            {"page": 2, "page_content": "..."}
+        ]
+    }
+    """
+    result = {"Pages": []}
+    
+    for page in ocr_data.get("Pages", []):
+        page_number = page.get("PageNumber")
+        page_text = page.get("Text", "")
+        
+        result["Pages"].append({
+            "page": page_number,
+            "page_content": page_text
+        })
+    
+    return result

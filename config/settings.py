@@ -24,6 +24,7 @@ def _load_yaml(path: Path) -> dict:
 # ---- Paths config ----
 _paths_cfg = _load_yaml(PATHS_CONFIG_FILE).get("paths", {})
 
+DATA_DIR = PROJECT_ROOT / _paths_cfg.get("data_dir", "data")
 RAW_DOCUMENTS_DIR = PROJECT_ROOT / _paths_cfg.get("raw_documents_dir", "data/raw_documents")
 PROCESSED_DOCUMENTS_DIR = PROJECT_ROOT / _paths_cfg.get("processed_documents_dir", "data/processed_documents")
 PROCESSED_FILENAME = _paths_cfg.get("processed_filename", "processed_document.pdf")
