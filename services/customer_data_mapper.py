@@ -176,6 +176,20 @@ def build_customer_updates_from_classification(
     Main entry point: Load classified JSON, validate, extract, and build DB updates.
     Returns: Dict of {DB_Column: value} ready for database update.
     """
+    # Debug: Check if configuration is loaded
+    if not CUSTOMER_DOC_TYPES:
+        print("\n⚠️  ERROR: CUSTOMER_DOC_TYPES is empty! Check customer_mapping.yml")
+        print("    Expected location: config/customer_mapping.yml")
+        return {}
+    
+    if not CUSTOMER_FIELD_MAPPING:
+        print("\n⚠️  ERROR: CUSTOMER_FIELD_MAPPING is empty! Check customer_mapping.yml")
+        return {}
+    
+    print(f"\n✓ Configuration loaded:")
+    print(f"  - Document types: {len(CUSTOMER_DOC_TYPES)}")
+    print(f"  - Field mappings: {len(CUSTOMER_FIELD_MAPPING)}")
+    
     # 1. Load classified JSON
     data = _load_classification_json(classified_json_path)
     pages = data.get("Pages", [])
@@ -191,7 +205,7 @@ def build_customer_updates_from_classification(
     for doc_key, df in dfs.items():
         doc_names = CUSTOMER_DOC_TYPES.get(doc_key, {}).get("names", [doc_key])
         doc_name = doc_names[0] if doc_names else doc_key
-        print(f"   - {doc_name}: {len(df)} page(s)")
+        print(f"   - {doc_name}: {len(df)} page(s), {len(df.columns)} fields")
     
     # 3. Validate document fields (prints missing fields)
     _validate_document_fields(dfs)

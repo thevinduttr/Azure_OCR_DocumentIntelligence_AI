@@ -70,11 +70,11 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "8. **Other Document** (any page that does not match above types)\n\n"
 
                 "# 🚀 Document Identification Rules\n"
-                "- If the page contains terms like: 'Resident Identity Card' 'Emirates ID', 'Emirates Identity Authority', 'EmiratesID', 'EID', then Doc Type = 'Emirates ID'.\n"
-                "- If the page contains: 'Driving License', 'Driver License', 'DL No', then Doc Type = 'Driving License'.\n"
+                "- If the page contains terms like: 'Resident Identity Card' 'Emirates ID', 'Emirates Identity Authority', 'EmiratesID', 'EID' or If the page contains a machine-readable zone (MRZ) with many '<' characters OR a long numeric card number together with a smart-card chip layout, then Doc Type = 'Emirates ID'.\n"
+                "- If the page contains: 'Driving License', 'Driver License', 'DL No' or If the page contains colorful rectangular permit boxes or a Traffic Code Number, and a barcode at the bottom, then Doc Type = 'Driving License'.\n"
                 "- If the page is contains: 'Vehicle License', 'Vehicle Information' ,'Mulkiya with plate', 'TC number', registration/expiry dates → Doc Type = 'Mulkiya'.\n"
-                "- If the page is a Vehicle Clearence Certificate → Doc Type = 'VCC'.\n"
-                "- If the page is a PCD / Hyasa document (port/customs related, showing vehicle import details) and contains: 'Vehicle Licensing Department' , 'Local Transfer cetificate' → Doc Type = 'PCD/Hyasa'.\n"
+                "- If the page is a Vehicle Clearence Certificate and it should contain : 'Vehicle Clearence Certificate' → Doc Type = 'VCC'.\n"
+                "- If the page is a PCD / Hyasa document (port/customs related, showing vehicle import details) and contains: 'Vehicle Possession Certificate' , 'Local Transfer cetificate' → Doc Type = 'PCD/Hyasa'.\n"
                 "- If the page is an electronic Mulkiya (digital/e-card style) and and contains: 'Vehicle License' → Doc Type = 'E Mulkiya'.\n"
                 "- Otherwise, Doc Type = 'Other Document'.\n\n"
 
@@ -225,7 +225,7 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "    - 'TOYOTA COROLLA 2015' -> Make='Toyota', Model='Corolla'\n"
                 "    - 'BMW-320i' -> Make='BMW', Model='320i'\n"
                 "  * If you cannot confidently split, set Make to first token and Model to remaining tokens; never merge both into a single field only.\n"
-                "- **Dates**: Extract in format shown in document (DD/MM/YYYY or similar). Do not convert or reformat.\n"
+                "- **Dates**: Extract in format shown in document (DD/MM/YYYY or similar). If date Like this '09 October 2025' it need to convert to DD/MM/YYYY format. date need to have numbers. not text \n"
                 "- **Names**: For First Name and Last Name, split properly. First word = First Name, remaining = Last Name.\n"
                 "- **Gender/Sex**: Accept M, F, Male, Female, or Arabic equivalents. Convert to single letter if found.\n\n"
 
