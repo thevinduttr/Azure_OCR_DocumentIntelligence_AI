@@ -10,6 +10,7 @@ from services.db_service import (
     build_document_row,
     insert_documents,
     update_customers_fields,
+    update_customers_ocr_status,
 )
 from services.blob_service import download_blob_to_file, upload_file_to_blob
 from services.document_merger import merge_documents_to_pdf
@@ -79,87 +80,104 @@ def main():
     # 2) Mark it as taken for processing
     mark_submission_as_processed(submission_id)
     print(f"[INFO] Marked SubmissionId={submission_id} as processed (IsProcessed=1).")
+    
+    try:
+        # 3) Get ProcessedDocument rows for this submission & request
+        processed_docs = fetch_processed_documents_for(submission_id=submission_id, request_id=request_id)
+        if not processed_docs:
+            print(f"[WARN] No pending ProcessedDocument rows for SubmissionId={submission_id}, RequestId={request_id}.")
+            update_customers_ocr_status(request_id=request_id, status="FAILED")
+            return
 
-    # 3) Get ProcessedDocument rows for this submission & request
-    processed_docs = fetch_processed_documents_for(submission_id=submission_id, request_id=request_id)
-    if not processed_docs:
-        print(f"[WARN] No pending ProcessedDocument rows for SubmissionId={submission_id}, RequestId={request_id}.")
-        return
+        # 4) Download all source docs to raw_documents folder using correct content type/extension
+        clean_raw_documents_folder()
 
-    # 4) Download all source docs to raw_documents folder using correct content type/extension
-    clean_raw_documents_folder()
+        for row in processed_docs:
+            container = row["BlobContainer"]
+            blob_path = row["BlobPath"]
+            content_type = row.get("ContentType") or ""
 
-    for row in processed_docs:
-        container = row["BlobContainer"]
-        blob_path = row["BlobPath"]
-        content_type = row.get("ContentType") or ""
+            local_name = build_local_filename(blob_path, content_type)
+            local_path = RAW_DOCUMENTS_DIR / local_name
 
-        local_name = build_local_filename(blob_path, content_type)
-        local_path = RAW_DOCUMENTS_DIR / local_name
+            print(f"  - Downloading {blob_path} ({content_type}) -> {local_path}")
+            download_blob_to_file(container=container, blob_path=blob_path, target_path=local_path)
 
-        print(f"  - Downloading {blob_path} ({content_type}) -> {local_path}")
-        download_blob_to_file(container=container, blob_path=blob_path, target_path=local_path)
+        # 5) Determine parent prefix for upload from first BlobPath
+        first_blob_path = processed_docs[0]["BlobPath"]
+        parent_prefix = extract_parent_prefix_from_blob_path(first_blob_path)
 
-    # 5) Determine parent prefix for upload from first BlobPath
-    first_blob_path = processed_docs[0]["BlobPath"]
-    parent_prefix = extract_parent_prefix_from_blob_path(first_blob_path)
+        # 6) Merge all downloaded docs into a single PDF
+        merged_pdf_path = merge_documents_to_pdf(RAW_DOCUMENTS_DIR, PROCESSED_PDF_PATH)
+        print(f"  [OK] Merged PDF: {merged_pdf_path}")
 
-    # 6) Merge all downloaded docs into a single PDF
-    merged_pdf_path = merge_documents_to_pdf(RAW_DOCUMENTS_DIR, PROCESSED_PDF_PATH)
-    print(f"  [OK] Merged PDF: {merged_pdf_path}")
+        # 7) OCR with Azure Document Intelligence
+        ocr_json_path = analyze_processed_pdf(merged_pdf_path)
+        print(f"  [OK] OCR JSON: {ocr_json_path}")
 
-    # 7) OCR with Azure Document Intelligence
-    ocr_json_path = analyze_processed_pdf(merged_pdf_path)
-    print(f"  [OK] OCR JSON: {ocr_json_path}")
+        # 8) Classification & field extraction using Azure OpenAI
+        classified_json_path = classify_document_from_ocr_json(ocr_json_path)
+        print(f"  [OK] Classified JSON: {classified_json_path}")
 
-    # 8) Classification & field extraction using Azure OpenAI
-    classified_json_path = classify_document_from_ocr_json(ocr_json_path)
-    print(f"  [OK] Classified JSON: {classified_json_path}")
-
-    # 9) Build final PDFs by Doc Type (Emirates ID, Driving License, Vehicle Registration, Other)
-    final_docs = build_final_documents_from_classification(
-        merged_pdf_path=merged_pdf_path,
-        classified_json_path=classified_json_path,
-    )
-    for d in final_docs:
-        print(f"  [OK] Final doc: {d['doc_type']} -> {d['path']}")
-
-    # 10) Upload final PDFs to blob and insert metadata into dbo.Documents
-    rows_to_insert = []
-
-    for d in final_docs:
-        doc_type_name = d["doc_type"]
-        file_path = d["path"]
-
-        blob_info = upload_file_to_blob(
-            file_path=file_path,
-            parent_prefix=parent_prefix,  # same main path, under processed_document/
-            content_type="application/pdf",
+        # 9) Build final PDFs by Doc Type (Emirates ID, Driving License, Vehicle Registration, Other)
+        final_docs = build_final_documents_from_classification(
+            merged_pdf_path=merged_pdf_path,
+            classified_json_path=classified_json_path,
         )
+        for d in final_docs:
+            print(f"  [OK] Final doc: {d['doc_type']} -> {d['path']}")
 
-        row = build_document_row(
-            doc_type_name=doc_type_name,
-            blob_info=blob_info,
-            submission_id=submission_id,
+        # 10) Upload final PDFs to blob and insert metadata into dbo.Documents
+        rows_to_insert = []
+
+        for d in final_docs:
+            doc_type_name = d["doc_type"]
+            file_path = d["path"]
+
+            blob_info = upload_file_to_blob(
+                file_path=file_path,
+                parent_prefix=parent_prefix,  # same main path, under processed_document/
+                content_type="application/pdf",
+            )
+
+            row = build_document_row(
+                doc_type_name=doc_type_name,
+                blob_info=blob_info,
+                submission_id=submission_id,
+                request_id=request_id,
+            )
+            rows_to_insert.append(row)
+
+        insert_documents(rows_to_insert)
+        print(f"  [OK] Uploaded {len(rows_to_insert)} final docs and inserted into [dbo].[Documents].")
+
+        # 11) Build Customers field updates from AI classification
+        customer_updates = build_customer_updates_from_classification(
+            classified_json_path=classified_json_path,
+        )
+        print(f"  [OK] Built customer updates: {customer_updates}")
+
+        # 12) Apply updates to existing Customers row for this RequestId
+        update_customers_fields(
             request_id=request_id,
+            updates=customer_updates,
         )
-        rows_to_insert.append(row)
-
-    insert_documents(rows_to_insert)
-    print(f"  [OK] Uploaded {len(rows_to_insert)} final docs and inserted into [dbo].[Documents].")
-
-    # 11) Build Customers field updates from AI classification
-    customer_updates = build_customer_updates_from_classification(
-        classified_json_path=classified_json_path,
-    )
-    print(f"  [OK] Built customer updates: {customer_updates}")
-
-    # 12) Apply updates to existing Customers row for this RequestId
-    update_customers_fields(
-        request_id=request_id,
-        updates=customer_updates,
-    )
-    print(f"  [OK] Updated Customers record for RequestId={request_id}.")
+        print(f"  [OK] Updated Customers record for RequestId={request_id}.")
+        
+        # 13) Mark OCR processing as successful
+        update_customers_ocr_status(request_id=request_id, status="SUCCESS")
+        print(f"\n[SUCCESS] All processing steps completed successfully for RequestId={request_id}")
+        
+    except Exception as e:
+        print(f"\n[ERROR] Processing failed for RequestId={request_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Mark OCR processing as failed
+        try:
+            update_customers_ocr_status(request_id=request_id, status="FAILED")
+        except Exception as update_error:
+            print(f"[ERROR] Failed to update OcrStatus to FAILED: {str(update_error)}")
 
 
 

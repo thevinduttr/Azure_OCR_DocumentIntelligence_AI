@@ -374,3 +374,32 @@ def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
         print(f"     Columns updated: {', '.join(columns)}")
     finally:
         conn.close()
+
+
+def update_customers_ocr_status(request_id: int, status: str) -> None:
+    """
+    Update OcrStatus field in [dbo].[Customers] for the given RequestId.
+    
+    Args:
+        request_id: The RequestId to update
+        status: Either 'SUCCESS' or 'FAILED'
+    """
+    if not DB_CONNECTION_STRING:
+        raise ValueError("Database connection string is not configured.")
+    
+    if status not in ['SUCCESS', 'FAILED']:
+        raise ValueError(f"Invalid status: {status}. Must be 'SUCCESS' or 'FAILED'.")
+    
+    conn = pyodbc.connect(DB_CONNECTION_STRING)
+    try:
+        cursor = conn.cursor()
+        sql = """
+        UPDATE [dbo].[Customers]
+        SET OcrStatus = ?, UpdatedAt = GETUTCDATE()
+        WHERE RequestId = ?
+        """
+        cursor.execute(sql, status, request_id)
+        conn.commit()
+        print(f"[OK] Updated Customers OcrStatus to '{status}' for RequestId={request_id}")
+    finally:
+        conn.close()
