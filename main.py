@@ -13,6 +13,7 @@ from services.db_service import (
     insert_documents,
     update_customers_fields,
     update_customers_ocr_status,
+    execute_customer_validations,
 )
 from services.blob_service import download_blob_to_file, upload_file_to_blob
 from services.document_merger import merge_documents_to_pdf
@@ -201,6 +202,10 @@ def main():
                 # 13) Mark OCR processing as successful
                 update_customers_ocr_status(request_id=request_id, status="SUCCESS")
                 print(f"\n[SUCCESS] All processing steps completed successfully for RequestId={request_id}")
+                
+                # 14) Execute customer validations stored procedure
+                execute_customer_validations(request_id=request_id, portal_name_list='')
+                print(f"[OK] Customer validations executed for RequestId={request_id}")
                 
             except Exception as e:
                 print(f"\n[ERROR] Processing failed for RequestId={request_id}: {str(e)}")
