@@ -70,6 +70,7 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "8. **Other Document** (any page that does not match above types)\n\n"
 
                 "# 🚀 Document Identification Rules\n"
+                "**IMPORTANT: Multiple document types can appear on the same page. Each document type found on a page should be identified separately.**\n\n"
                 "- If the page contains terms like: 'Resident Identity Card' 'Emirates ID', 'Emirates Identity Authority', 'EmiratesID', 'EID' or If the page contains a machine-readable zone (MRZ) with many '<' characters OR a long numeric card number together with a smart-card chip layout, then Doc Type = 'Emirates ID'.\n"
                 "- If the page contains: 'Driving License', 'Driver License', 'DL No' or If the page contains colorful rectangular permit boxes or a Traffic Code Number, and a barcode at the bottom, then Doc Type = 'Driving License'.\n"
                 "- If the page is contains: 'Vehicle License', 'Vehicle Information' ,'Mulkiya with plate', 'TC number', registration/expiry dates → Doc Type = 'Mulkiya'.\n"
@@ -77,6 +78,11 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 "- If the page is a PCD / Hyasa document (port/customs related, showing vehicle import details) and contains: 'Vehicle Possession Certificate' , 'Local Transfer cetificate' → Doc Type = 'PCD/Hyasa'.\n"
                 "- If the page is an electronic Mulkiya (digital/e-card style) and and contains: 'Vehicle License' → Doc Type = 'E Mulkiya'.\n"
                 "- Otherwise, Doc Type = 'Other Document'.\n\n"
+                "**Multi-Document Page Handling:**\n"
+                "- If a single page contains multiple document types (e.g., both Emirates ID and Driving License), create separate entries for each document type found.\n"
+                "- Each document type entry should have the same page number but different Doc Type and corresponding fields.\n"
+                "- Extract fields specific to each document type from their respective sections on the page.\n"
+                "- Example: Page 1 contains both Emirates ID and Driving License → Create two entries with page=1, one with Doc Type='Emirates ID' and another with Doc Type='Driving License'.\n\n"
 
                 "# 📄 Output Requirements\n"
                 "Return an object with key `Pages`, containing a list of extracted results.\n"

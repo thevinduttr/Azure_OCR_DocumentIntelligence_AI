@@ -203,10 +203,6 @@ def main():
                 update_customers_ocr_status(request_id=request_id, status="SUCCESS")
                 print(f"\n[SUCCESS] All processing steps completed successfully for RequestId={request_id}")
                 
-                # 14) Execute customer validations stored procedure
-                execute_customer_validations(request_id=request_id, portal_name_list='')
-                print(f"[OK] Customer validations executed for RequestId={request_id}")
-                
             except Exception as e:
                 print(f"\n[ERROR] Processing failed for RequestId={request_id}: {str(e)}")
                 traceback.print_exc()
@@ -216,6 +212,14 @@ def main():
                     update_customers_ocr_status(request_id=request_id, status="FAILED")
                 except Exception as update_error:
                     print(f"[ERROR] Failed to update OcrStatus to FAILED: {str(update_error)}")
+            
+            # 14) Execute customer validations stored procedure (outside try-except)
+            try:
+                execute_customer_validations(request_id=request_id, portal_name_list='')
+                print(f"[OK] Customer validations executed for RequestId={request_id}")
+            except Exception as validation_error:
+                print(f"[WARN] Customer validation failed for RequestId={request_id}: {str(validation_error)}")
+                # Don't mark OCR as failed - validation is separate from OCR processing
             
             # Small delay before processing next submission
             time.sleep(2)
