@@ -405,20 +405,19 @@ def update_customers_ocr_status(request_id: int, status: str) -> None:
         conn.close()
 
 
-def execute_customer_validations(request_id: int, portal_name_list: str = '') -> None:
+def execute_customer_validations(request_id: int) -> None:
     """
     Execute the customer validation stored procedure.
     
     Args:
         request_id: The RequestId to validate
-        portal_name_list: Optional portal name list parameter
     """
     conn = _get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "EXEC ExecuteAllCustomerValidations @RequestId = ?, @PortalNameList = ?",
-            (request_id, portal_name_list)
+            "EXEC ExecuteAllCustomerValidations @RequestId = ?",
+            (request_id,)
         )
         conn.commit()
         print(f"[INFO] Executed customer validations for RequestId={request_id}")

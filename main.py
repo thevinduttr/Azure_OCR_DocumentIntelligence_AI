@@ -215,7 +215,7 @@ def main():
             
             # 14) Execute customer validations stored procedure (outside try-except)
             try:
-                execute_customer_validations(request_id=request_id, portal_name_list='')
+                execute_customer_validations(request_id=request_id)
                 print(f"[OK] Customer validations executed for RequestId={request_id}")
             except Exception as validation_error:
                 print(f"[WARN] Customer validation failed for RequestId={request_id}: {str(validation_error)}")
