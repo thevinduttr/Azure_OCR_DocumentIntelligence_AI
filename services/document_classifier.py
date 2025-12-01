@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import certifi
@@ -18,6 +19,31 @@ from config.settings import (
 # Fix SSL certificate verification issue (if needed in your env)
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
+
+def remove_arabic_text_from_json(json_data: dict) -> dict:
+    """
+    Remove Arabic characters from OCR JSON data to prevent content filter issues.
+    """
+    if not isinstance(json_data, dict):
+        return json_data
+    
+    cleaned_data = {}
+    for key, value in json_data.items():
+        if isinstance(value, str):
+            # Remove Arabic characters
+            cleaned_value = re.sub(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', ' ', value)
+            # Clean up multiple spaces
+            cleaned_data[key] = re.sub(r'\s+', ' ', cleaned_value).strip()
+        elif isinstance(value, dict):
+            cleaned_data[key] = remove_arabic_text_from_json(value)
+        elif isinstance(value, list):
+            cleaned_data[key] = [remove_arabic_text_from_json(item) if isinstance(item, dict) else 
+                               (re.sub(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', ' ', item) if isinstance(item, str) else item)
+                               for item in value]
+        else:
+            cleaned_data[key] = value
+    
+    return cleaned_data
 
 def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
     """
@@ -372,7 +398,39 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
             presence_penalty=0,
         )
     except Exception as e:
-        raise RuntimeError(f"Azure OpenAI API call failed: {e}") from e
+        # Check if this is a content filter error specifically for jailbreak detection
+        error_str = str(e)
+        if ("content_filter" in error_str and "jailbreak" in error_str) or "ResponsibleAIPolicyViolation" in error_str:
+            print("[WARN] Content filter detected Arabic text, retrying with Arabic text removed...")
+            
+            # Remove Arabic text from the user prompt
+            cleaned_user_prompt = remove_arabic_text_from_json(user_prompt)
+            
+            # Create new chat prompt with cleaned data
+            chat_prompt_cleaned = [
+                chat_prompt[0],  # Keep system prompt unchanged
+                {
+                    "role": "user", 
+                    "content": json.dumps(cleaned_user_prompt, ensure_ascii=False),
+                },
+            ]
+            
+            # Retry the API call
+            try:
+                completion = client.chat.completions.create(
+                    model=AZURE_OAI_DEPLOYMENT_NAME,
+                    messages=chat_prompt_cleaned,
+                    max_tokens=1200,
+                    temperature=0.0,
+                    top_p=1,
+                    frequency_penalty=0,
+                    presence_penalty=0,
+                )
+                print("[INFO] Successfully processed after removing Arabic text")
+            except Exception as retry_error:
+                raise RuntimeError(f"Azure OpenAI API call failed even after removing Arabic text: {retry_error}") from retry_error
+        else:
+            raise RuntimeError(f"Azure OpenAI API call failed: {e}") from e
 
     response_content = completion.choices[0].message.content
 
