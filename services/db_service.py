@@ -14,10 +14,37 @@ from config.settings import (
 
 from utils.date_utils import normalize_date_for_sql
 
+# Import logging service with error handling
+try:
+    from services.logging_service import get_ocr_logger
+    _logger_available = True
+except ImportError:
+    _logger_available = False
+
+def _log_if_available(func_name, *args, **kwargs):
+    """Helper to log if logger is available."""
+    if _logger_available:
+        try:
+            logger = get_ocr_logger()
+            getattr(logger, func_name)(*args, **kwargs)
+        except Exception:
+            pass  # Continue if logging fails
+
 def _get_db_connection():
     if not DB_CONNECTION_STRING:
-        raise ValueError("Database connection string is not configured.")
-    return pyodbc.connect(DB_CONNECTION_STRING)
+        error_msg = "Database connection string is not configured."
+        _log_if_available('log_error', error_msg)
+        raise ValueError(error_msg)
+    
+    _log_if_available('log_database_operation', 'CONNECT', 'DATABASE', 'Establishing database connection')
+    
+    try:
+        conn = pyodbc.connect(DB_CONNECTION_STRING)
+        _log_if_available('log_database_operation', 'CONNECT', 'DATABASE', 'Database connection established successfully')
+        return conn
+    except Exception as e:
+        _log_if_available('log_error', f'Database connection failed: {str(e)}', e)
+        raise
 
 def fetch_next_submission_to_process() -> Optional[Dict[str, Any]]:
     """
@@ -27,8 +54,12 @@ def fetch_next_submission_to_process() -> Optional[Dict[str, Any]]:
       - Earliest ReceivedAt first within same priority
     Returns a single row dict or None.
     """
+    _log_if_available('log_database_operation', 'SELECT', 'Submissions', 'Fetching next submission to process')
+    
     if not DB_CONNECTION_STRING:
-        raise ValueError("Database connection string is not configured.")
+        error_msg = "Database connection string is not configured."
+        _log_if_available('log_error', error_msg)
+        raise ValueError(error_msg)
 
     conn = pyodbc.connect(DB_CONNECTION_STRING)
     try:
@@ -62,13 +93,26 @@ def fetch_next_submission_to_process() -> Optional[Dict[str, Any]]:
             END,
             ReceivedAt ASC
         """
+        
+        _log_if_available('log_database_query', sql, None, None)
         cursor.execute(sql)
         row = cursor.fetchone()
+        
         if not row:
+            _log_if_available('log_database_query', sql, None, 0)
+            _log_if_available('log_info', 'No pending submissions found')
             return None
 
         columns = [c[0] for c in cursor.description]
-        return {col: val for col, val in zip(columns, row)}
+        result = {col: val for col, val in zip(columns, row)}
+        
+        _log_if_available('log_database_query', sql, None, 1)
+        _log_if_available('log_info', f'Found submission: ID={result.get("Id")}, RequestId={result.get("RequestId")}, Priority={result.get("PriorityLevel")}')
+        
+        return result
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to fetch next submission: {str(e)}', e)
+        raise
     finally:
         conn.close()
 
@@ -77,8 +121,12 @@ def mark_submission_as_processed(submission_id: int) -> None:
     """
     Mark a submission as processed (IsProcessed = 1, ProcessedAt = now).
     """
+    _log_if_available('log_database_operation', 'UPDATE', 'Submissions', f'Marking submission {submission_id} as processed')
+    
     if not DB_CONNECTION_STRING:
-        raise ValueError("Database connection string is not configured.")
+        error_msg = "Database connection string is not configured."
+        _log_if_available('log_error', error_msg)
+        raise ValueError(error_msg)
 
     conn = pyodbc.connect(DB_CONNECTION_STRING)
     try:
@@ -89,8 +137,20 @@ def mark_submission_as_processed(submission_id: int) -> None:
             ProcessedAt = GETUTCDATE()
         WHERE Id = ? AND IsProcessed = 0
         """
+        
+        _log_if_available('log_database_query', sql, (submission_id,), None)
         cursor.execute(sql, submission_id)
+        affected_rows = cursor.rowcount
         conn.commit()
+        
+        _log_if_available('log_database_operation', 'UPDATE', 'Submissions', f'Successfully marked submission {submission_id} as processed', affected_rows)
+        
+        if affected_rows == 0:
+            _log_if_available('log_warning', f'No rows updated when marking submission {submission_id} as processed - submission may already be processed')
+        
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to mark submission {submission_id} as processed: {str(e)}', e)
+        raise
     finally:
         conn.close()
 
@@ -100,8 +160,12 @@ def fetch_processed_documents_for(submission_id: int, request_id: int) -> List[D
     Get Document rows for a given SubmissionId + RequestId
     with OcrStatus = 'PENDING'.
     """
+    _log_if_available('log_database_operation', 'SELECT', 'Documents', f'Fetching processed documents for SubmissionId={submission_id}, RequestId={request_id}')
+    
     if not DB_CONNECTION_STRING:
-        raise ValueError("Database connection string is not configured.")
+        error_msg = "Database connection string is not configured."
+        _log_if_available('log_error', error_msg)
+        raise ValueError(error_msg)
 
     conn = pyodbc.connect(DB_CONNECTION_STRING)
     try:
@@ -129,6 +193,8 @@ def fetch_processed_documents_for(submission_id: int, request_id: int) -> List[D
           AND (IsDeleted = 0 OR IsDeleted IS NULL)
         ORDER BY UploadedAt ASC
         """
+        
+        _log_if_available('log_database_query', sql, (submission_id, request_id), None)
         cursor.execute(sql, submission_id, request_id)
 
         columns = [c[0] for c in cursor.description]
@@ -137,7 +203,21 @@ def fetch_processed_documents_for(submission_id: int, request_id: int) -> List[D
             row_dict = {col: val for col, val in zip(columns, db_row)}
             rows.append(row_dict)
 
+        _log_if_available('log_database_query', sql, (submission_id, request_id), len(rows))
+        _log_if_available('log_info', f'Found {len(rows)} pending documents for processing')
+        
+        # Log document details
+        for i, row in enumerate(rows, 1):
+            blob_path = row.get('BlobPath', 'Unknown')
+            content_type = row.get('ContentType', 'Unknown')
+            file_size = row.get('FileSizeBytes', 0)
+            size_mb = round(file_size / (1024 * 1024), 2) if file_size else 0
+            _log_if_available('log_info', f'   Document {i}: {blob_path} ({content_type}, {size_mb} MB)')
+
         return rows
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to fetch processed documents: {str(e)}', e)
+        raise
     finally:
         conn.close()
 
@@ -260,26 +340,34 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
     - If not exists: insert a new record
     """
     if not rows:
+        _log_if_available('log_info', 'No documents to insert/update')
         return
+
+    _log_if_available('log_database_operation', 'INSERT/UPDATE', 'ProcessedDocument', f'Processing {len(rows)} document records')
 
     conn = _get_db_connection()
     try:
         cursor = conn.cursor()
+        inserted_count = 0
+        updated_count = 0
         
-        for row in rows:
+        for i, row in enumerate(rows, 1):
             request_id = row["RequestId"]
             document_type = row["DocumentType"]
+            
+            _log_if_available('log_info', f'Processing document {i}/{len(rows)}: RequestId={request_id}, DocumentType={document_type}')
             
             # Check if document exists
             existing_doc_id = check_document_exists(request_id, document_type)
             
             if existing_doc_id:
                 # Update existing document
-                print(f"[INFO] Document exists (RequestId={request_id}, DocumentType={document_type}). Updating...")
+                _log_if_available('log_info', f'Document exists (RequestId={request_id}, DocumentType={document_type}). Updating...')
                 update_document(existing_doc_id, row)
+                updated_count += 1
             else:
                 # Insert new document
-                print(f"[INFO] Document does not exist (RequestId={request_id}, DocumentType={document_type}). Inserting...")
+                _log_if_available('log_info', f'Document does not exist (RequestId={request_id}, DocumentType={document_type}). Inserting...')
                 sql = """
                 INSERT INTO [dbo].[ProcessedDocument] (
                     SubmissionId,
@@ -299,8 +387,8 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                cursor.execute(
-                    sql,
+                
+                params = (
                     row["SubmissionId"],
                     row["RequestId"],
                     row["DocumentType"],
@@ -316,8 +404,20 @@ def insert_documents(rows: List[Dict[str, Any]]) -> None:
                     row["IsDeleted"],
                     row["DeletedAt"],
                 )
+                
+                _log_if_available('log_database_query', sql, params, None)
+                cursor.execute(sql, *params)
                 conn.commit()
-                print(f"[OK] Inserted new document (RequestId={request_id}, DocumentType={document_type})")
+                inserted_count += 1
+                _log_if_available('log_info', f'Inserted new document (RequestId={request_id}, DocumentType={document_type})')
+        
+        _log_if_available('log_database_operation', 'INSERT/UPDATE', 'ProcessedDocument', 
+                         f'Completed: {inserted_count} inserted, {updated_count} updated', 
+                         inserted_count + updated_count)
+                         
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to insert/update documents: {str(e)}', e)
+        raise
     finally:
         conn.close()
 
@@ -339,19 +439,41 @@ def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
     UPDATE existing [dbo].[Customers] row for the given RequestId.
     Date columns are normalized using utils.date_utils.normalize_date_for_sql.
     """
+    _log_if_available('log_database_operation', 'UPDATE', 'Customers', f'Updating customer fields for RequestId={request_id}')
+    
     if not DB_CONNECTION_STRING:
-        raise ValueError("Database connection string is not configured.")
+        error_msg = "Database connection string is not configured."
+        _log_if_available('log_error', error_msg)
+        raise ValueError(error_msg)
+        
     if not updates:
-        print("[INFO] No Customers fields to update.")
+        _log_if_available('log_info', 'No Customers fields to update')
         return
+
+    _log_if_available('log_info', f'Updating {len(updates)} customer fields for RequestId={request_id}')
+    
+    # Log the fields being updated (without values for security)
+    field_names = list(updates.keys())
+    _log_if_available('log_info', f'Fields to update: {", ".join(field_names)}')
 
     # Normalize values (especially dates)
     prepared_updates: Dict[str, Any] = {}
+    date_fields_processed = []
+    
     for col, val in updates.items():
         if col in DATE_COLUMNS:
-            prepared_updates[col] = normalize_date_for_sql(val)
+            original_val = val
+            normalized_val = normalize_date_for_sql(val)
+            prepared_updates[col] = normalized_val
+            date_fields_processed.append(col)
+            
+            if normalized_val != original_val:
+                _log_if_available('log_info', f'Date field {col}: normalized from "{original_val}" to "{normalized_val}"')
         else:
             prepared_updates[col] = val
+    
+    if date_fields_processed:
+        _log_if_available('log_info', f'Processed date fields: {", ".join(date_fields_processed)}')
 
     columns: List[str] = list(prepared_updates.keys())
     set_clause = ", ".join(f"{col} = ?" for col in columns)
@@ -368,10 +490,22 @@ def update_customers_fields(request_id: int, updates: Dict[str, Any]) -> None:
     conn = pyodbc.connect(DB_CONNECTION_STRING)
     try:
         cursor = conn.cursor()
+        _log_if_available('log_database_query', sql, tuple(params), None)
         cursor.execute(sql, params)
+        affected_rows = cursor.rowcount
         conn.commit()
-        print(f"[OK] Updated Customers for RequestId={request_id}")
-        print(f"     Columns updated: {', '.join(columns)}")
+        
+        _log_if_available('log_database_operation', 'UPDATE', 'Customers', 
+                         f'Updated customer fields for RequestId={request_id}', affected_rows)
+        
+        if affected_rows == 0:
+            _log_if_available('log_warning', f'No customer record found for RequestId={request_id}')
+        else:
+            _log_if_available('log_info', f'Successfully updated {len(columns)} fields for RequestId={request_id}')
+            
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to update customer fields: {str(e)}', e)
+        raise
     finally:
         conn.close()
 
@@ -412,17 +546,23 @@ def execute_customer_validations(request_id: int) -> None:
     Args:
         request_id: The RequestId to validate
     """
+    _log_if_available('log_database_operation', 'EXEC', 'ExecuteAllCustomerValidations', f'Running validations for RequestId={request_id}')
+    
     conn = _get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "EXEC ExecuteAllCustomerValidations @RequestId = ?",
-            (request_id,)
-        )
+        stored_proc = "EXEC ExecuteAllCustomerValidations @RequestId = ?"
+        _log_if_available('log_database_query', stored_proc, (request_id,), None)
+        
+        cursor.execute(stored_proc, (request_id,))
         conn.commit()
-        print(f"[INFO] Executed customer validations for RequestId={request_id}")
+        
+        _log_if_available('log_database_operation', 'EXEC', 'ExecuteAllCustomerValidations', 
+                         f'Successfully executed customer validations for RequestId={request_id}')
+        _log_if_available('log_info', f'Customer validation procedure completed for RequestId={request_id}')
+        
     except Exception as e:
-        print(f"[ERROR] Failed to execute customer validations: {e}")
+        _log_if_available('log_error', f'Failed to execute customer validations for RequestId={request_id}: {str(e)}', e)
         raise
     finally:
         cursor.close()

@@ -37,6 +37,10 @@ logs/
 *.temp
 *.bak
 
+# OCR processing logs (contains sensitive data)
+logs/**/*.log
+logs/**/*.json
+
 
 # ========================
 # Project data folders

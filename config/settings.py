@@ -33,6 +33,7 @@ PROCESSED_PDF_PATH = PROCESSED_DOCUMENTS_DIR / PROCESSED_FILENAME
 OCR_OUTPUT_DIR = PROJECT_ROOT / _paths_cfg.get("ocr_output_dir", "data/ocr_output")
 AI_OUTPUT_DIR = PROJECT_ROOT / _paths_cfg.get("ai_output_dir", "data/ai_output") 
 FINAL_DOCUMENTS_DIR = PROJECT_ROOT / _paths_cfg.get("final_documents_dir", "data/final_documents")
+LOGS_DIR = PROJECT_ROOT / _paths_cfg.get("logs_dir", "logs")
 
 
 # ---- Azure Document Intelligence config ----
@@ -99,3 +100,7 @@ _customer_config = _load_yaml(CUSTOMER_MAPPING_CONFIG_FILE).get("customer_mappin
 CUSTOMER_DOC_TYPES = _customer_config.get("document_types", {})
 CUSTOMER_VALIDATION = _customer_config.get("validation", {})
 CUSTOMER_FIELD_MAPPING = _customer_config.get("database_mapping", {})
+
+# Initialize logging service
+from services.logging_service import initialize_logger
+initialize_logger(LOGS_DIR)

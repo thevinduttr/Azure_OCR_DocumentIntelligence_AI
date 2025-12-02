@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import certifi
@@ -18,6 +19,22 @@ from config.settings import (
 
 # Fix SSL certificate verification issue (if needed in your env)
 os.environ["SSL_CERT_FILE"] = certifi.where()
+
+# Import logging service with error handling
+try:
+    from services.logging_service import get_ocr_logger
+    _logger_available = True
+except ImportError:
+    _logger_available = False
+
+def _log_if_available(func_name, *args, **kwargs):
+    """Helper to log if logger is available."""
+    if _logger_available:
+        try:
+            logger = get_ocr_logger()
+            getattr(logger, func_name)(*args, **kwargs)
+        except Exception:
+            pass  # Continue if logging fails
 
 
 def remove_arabic_text_from_json(json_data: dict) -> dict:
@@ -53,28 +70,63 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
 
     Returns: Path to the saved classification JSON file.
     """
+    start_time = time.time()
+    _log_if_available('log_info', f'Starting AI document classification')
+    _log_if_available('log_info', f'Input OCR JSON: {ocr_json_path.name}')
+    
     if not ocr_json_path.exists():
-        raise FileNotFoundError(f"OCR JSON file not found: {ocr_json_path}")
+        error_msg = f"OCR JSON file not found: {ocr_json_path}"
+        _log_if_available('log_error', error_msg)
+        raise FileNotFoundError(error_msg)
+    
+    # Log file info
+    file_size_kb = round(ocr_json_path.stat().st_size / 1024, 2)
+    _log_if_available('log_info', f'OCR JSON file size: {file_size_kb} KB')
 
     if not (AZURE_OAI_ENDPOINT and AZURE_OAI_DEPLOYMENT_NAME and AZURE_OAI_KEY):
-        raise ValueError("Azure OpenAI config (endpoint/deployment/key) is not properly set.")
+        error_msg = "Azure OpenAI config (endpoint/deployment/key) is not properly set."
+        _log_if_available('log_error', error_msg)
+        _log_if_available('log_configuration_load', 'azure_openai.yml', 'FAILED', 'Missing configuration parameters')
+        raise ValueError(error_msg)
+    
+    _log_if_available('log_configuration_load', 'azure_openai.yml', 'SUCCESS', 
+                     f'Using endpoint: {AZURE_OAI_ENDPOINT[:50]}..., deployment: {AZURE_OAI_DEPLOYMENT_NAME}')
 
     # Ensure output directory exists
     AI_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _log_if_available('log_file_operation', 'CREATE_DIR', str(AI_OUTPUT_DIR), 'Created AI output directory')
 
     # Read OCR JSON
+    _log_if_available('log_info', 'Loading OCR JSON for AI processing...')
     try:
         with ocr_json_path.open("r", encoding="utf-8") as f:
             user_prompt = json.load(f)
+        
+        # Log input statistics
+        pages = user_prompt.get('Pages', [])
+        total_chars = sum(len(page.get('page_content', '')) for page in pages)
+        
+        _log_if_available('log_info', f'OCR JSON loaded successfully')
+        _log_if_available('log_info', f'  - Pages to classify: {len(pages)}')
+        _log_if_available('log_info', f'  - Total characters: {total_chars:,}')
+        _log_if_available('log_data_processing', 'OCR JSON Loading', 1, len(pages), f'Prepared {len(pages)} pages for AI classification')
+        
     except Exception as e:
+        _log_if_available('log_error', f'Error reading OCR JSON file: {str(e)}', e)
         raise RuntimeError(f"Error reading OCR JSON file: {e}") from e
 
     # Initialize Azure OpenAI client
-    client = AzureOpenAI(
-        azure_endpoint=AZURE_OAI_ENDPOINT,  # base URL only
-        api_key=AZURE_OAI_KEY,
-        api_version=AZURE_OAI_API_VERSION,
-    )
+    _log_if_available('log_info', 'Initializing Azure OpenAI client...')
+    try:
+        client = AzureOpenAI(
+            azure_endpoint=AZURE_OAI_ENDPOINT,  # base URL only
+            api_key=AZURE_OAI_KEY,
+            api_version=AZURE_OAI_API_VERSION,
+        )
+        _log_if_available('log_info', 'Azure OpenAI client initialized successfully')
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to initialize Azure OpenAI client: {str(e)}', e)
+        raise
 
     # 🔒 Locked-style prompt, extended with extra document types
     chat_prompt = [
@@ -389,6 +441,12 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
         },
     ]
 
+    # Prepare API request
+    _log_if_available('log_info', 'Preparing classification request for Azure OpenAI...')
+    _log_if_available('log_api_call', 'Azure OpenAI', 'chat.completions.create', 'POST')
+    
+    api_start_time = time.time()
+    
     try:
         completion = client.chat.completions.create(
             model=AZURE_OAI_DEPLOYMENT_NAME,
@@ -399,11 +457,20 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
             frequency_penalty=0,
             presence_penalty=0,
         )
+        
+        api_duration_ms = int((time.time() - api_start_time) * 1000)
+        _log_if_available('log_api_call', 'Azure OpenAI', 'chat.completions.create', 'POST', 200, api_duration_ms)
+        _log_if_available('log_info', f'AI classification completed in {api_duration_ms}ms')
+        
     except Exception as e:
+        api_duration_ms = int((time.time() - api_start_time) * 1000)
+        _log_if_available('log_api_call', 'Azure OpenAI', 'chat.completions.create', 'POST', None, api_duration_ms)
+        
         # Check if this is a content filter error specifically for jailbreak detection
         error_str = str(e)
         if ("content_filter" in error_str and "jailbreak" in error_str) or "ResponsibleAIPolicyViolation" in error_str:
-            print("[WARN] Content filter detected Arabic text, retrying with Arabic text removed...")
+            _log_if_available('log_warning', 'Content filter detected Arabic text, retrying with Arabic text removed...')
+            _log_if_available('log_security_event', 'Content Filter Triggered', 'Arabic text detected in OCR output', 'WARNING')
             
             # Remove Arabic text from the user prompt
             cleaned_user_prompt = remove_arabic_text_from_json(user_prompt)
@@ -418,6 +485,9 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
             ]
             
             # Retry the API call
+            _log_if_available('log_info', 'Retrying classification with cleaned text...')
+            retry_start_time = time.time()
+            
             try:
                 completion = client.chat.completions.create(
                     model=AZURE_OAI_DEPLOYMENT_NAME,
@@ -428,27 +498,88 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                     frequency_penalty=0,
                     presence_penalty=0,
                 )
-                print("[INFO] Successfully processed after removing Arabic text")
+                
+                retry_duration_ms = int((time.time() - retry_start_time) * 1000)
+                _log_if_available('log_api_call', 'Azure OpenAI', 'chat.completions.create (retry)', 'POST', 200, retry_duration_ms)
+                _log_if_available('log_info', f'Successfully processed after removing Arabic text ({retry_duration_ms}ms)')
+                
             except Exception as retry_error:
+                retry_duration_ms = int((time.time() - retry_start_time) * 1000)
+                _log_if_available('log_api_call', 'Azure OpenAI', 'chat.completions.create (retry)', 'POST', None, retry_duration_ms)
+                _log_if_available('log_error', f'Azure OpenAI API call failed even after removing Arabic text: {str(retry_error)}', retry_error)
                 raise RuntimeError(f"Azure OpenAI API call failed even after removing Arabic text: {retry_error}") from retry_error
         else:
+            _log_if_available('log_error', f'Azure OpenAI API call failed: {str(e)}', e)
             raise RuntimeError(f"Azure OpenAI API call failed: {e}") from e
 
+    # Process API response
+    _log_if_available('log_info', 'Processing AI classification response...')
+    
     response_content = completion.choices[0].message.content
+    response_length = len(response_content)
+    
+    _log_if_available('log_info', f'Received response from AI model ({response_length:,} characters)')
 
     try:
         classification_data = json.loads(response_content)
-    except json.JSONDecodeError:
+        _log_if_available('log_info', 'Successfully parsed AI response as JSON')
+        
+        # Analyze classification results
+        pages = classification_data.get('Pages', [])
+        if pages:
+            _log_if_available('log_info', f'AI classified {len(pages)} pages')
+            
+            # Count document types
+            doc_types = {}
+            for page in pages:
+                doc_type = page.get('Doc Type', 'Unknown')
+                doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
+            
+            _log_if_available('log_info', 'Document types identified:')
+            for doc_type, count in doc_types.items():
+                _log_if_available('log_info', f'  - {doc_type}: {count} page(s)')
+            
+            _log_if_available('log_data_processing', 'AI Classification', len(pages), len(doc_types), 
+                             f'Classified {len(pages)} pages into {len(doc_types)} document types')
+        
+    except json.JSONDecodeError as e:
+        _log_if_available('log_error', f'Model response is not valid JSON: {str(e)}', e)
+        _log_if_available('log_debug', f'Raw response content: {response_content[:500]}...')
         raise RuntimeError(f"Model response is not valid JSON:\n{response_content}")
 
     # Attach token usage if available
     if hasattr(completion, "usage") and completion.usage is not None:
-        classification_data["prompt_tokens"] = completion.usage.prompt_tokens
-        classification_data["completion_tokens"] = completion.usage.completion_tokens
+        prompt_tokens = completion.usage.prompt_tokens
+        completion_tokens = completion.usage.completion_tokens
+        total_tokens = prompt_tokens + completion_tokens
+        
+        classification_data["prompt_tokens"] = prompt_tokens
+        classification_data["completion_tokens"] = completion_tokens
+        
+        _log_if_available('log_info', f'Token usage:')
+        _log_if_available('log_info', f'  - Prompt tokens: {prompt_tokens:,}')
+        _log_if_available('log_info', f'  - Completion tokens: {completion_tokens:,}')
+        _log_if_available('log_info', f'  - Total tokens: {total_tokens:,}')
+        
+        _log_if_available('log_performance_metric', 'AI Tokens Used', total_tokens, 'tokens')
 
     # Save output JSON
     output_path = AI_OUTPUT_DIR / f"{ocr_json_path.stem}_classified.json"
-    with output_path.open("w", encoding="utf-8") as f_out:
-        json.dump(classification_data, f_out, indent=2, ensure_ascii=False)
-
-    return output_path
+    _log_if_available('log_file_operation', 'WRITE', str(output_path), 'Saving AI classification results')
+    
+    try:
+        with output_path.open("w", encoding="utf-8") as f_out:
+            json.dump(classification_data, f_out, indent=2, ensure_ascii=False)
+        
+        output_size_kb = round(output_path.stat().st_size / 1024, 2)
+        total_duration_ms = int((time.time() - start_time) * 1000)
+        
+        _log_if_available('log_info', f'AI classification results saved: {output_path.name} ({output_size_kb} KB)')
+        _log_if_available('log_performance_metric', 'Total AI Classification Duration', total_duration_ms, 'ms')
+        _log_if_available('log_info', f'AI document classification completed successfully in {total_duration_ms}ms')
+        
+        return output_path
+        
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to save classification results: {str(e)}', e)
+        raise
