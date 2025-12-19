@@ -19,6 +19,7 @@ from services.azure_ocr_client import analyze_processed_pdf
 from services.document_classifier import classify_document_from_ocr_json
 from services.final_document_builder import build_final_documents_from_classification
 from services.logging_service import get_ocr_logger
+from utils.error_notification_service import send_processing_error_notification
 
 
 def _clean_raw_documents_folder() -> None:
@@ -215,5 +216,62 @@ def process_next_submission() -> None:
         
     except Exception as e:
         logger.log_error(f"Processing failed: {str(e)}", e)
+        
+        # Send error notification
+        try:
+            import asyncio
+            
+            # Determine the processing step where the error occurred
+            error_context = {
+                "submission_id": submission_id,
+                "request_id": request_id,
+                "priority_level": priority_level,
+                "documents_count": len(processed_docs) if 'processed_docs' in locals() else 0,
+                "error_location": "OCR Batch Processing Pipeline"
+            }
+            
+            # Try to run the notification
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(send_processing_error_notification(
+                        step_name="OCR Batch Processing",
+                        error=e,
+                        submission_id=submission_id,
+                        request_id=request_id,
+                        additional_context=error_context,
+                        logger=logger
+                    ))
+                else:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(send_processing_error_notification(
+                        step_name="OCR Batch Processing",
+                        error=e,
+                        submission_id=submission_id,
+                        request_id=request_id,
+                        additional_context=error_context,
+                        logger=logger
+                    ))
+                    loop.close()
+            except RuntimeError:
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(send_processing_error_notification(
+                        step_name="OCR Batch Processing",
+                        error=e,
+                        submission_id=submission_id,
+                        request_id=request_id,
+                        additional_context=error_context,
+                        logger=logger
+                    ))
+                    loop.close()
+                except Exception as notification_error:
+                    logger.log_error(f"Failed to send error notification: {str(notification_error)}")
+                    
+        except Exception as notification_error:
+            logger.log_error(f"Failed to send error notification: {str(notification_error)}")
+        
         logger.complete_request_logging("FAILED")
         raise

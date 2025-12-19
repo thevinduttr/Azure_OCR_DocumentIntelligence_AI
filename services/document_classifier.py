@@ -27,6 +27,13 @@ try:
 except ImportError:
     _logger_available = False
 
+# Import error notification service
+try:
+    from utils.error_notification_service import send_processing_error_notification
+    _error_notification_available = True
+except ImportError:
+    _error_notification_available = False
+
 def _log_if_available(func_name, *args, **kwargs):
     """Helper to log if logger is available."""
     if _logger_available:
@@ -510,6 +517,64 @@ def classify_document_from_ocr_json(ocr_json_path: Path) -> Path:
                 raise RuntimeError(f"Azure OpenAI API call failed even after removing Arabic text: {retry_error}") from retry_error
         else:
             _log_if_available('log_error', f'Azure OpenAI API call failed: {str(e)}', e)
+            
+            # Send error notification for Azure OpenAI failures
+            if _error_notification_available:
+                try:
+                    notification_logger = get_ocr_logger() if _logger_available else None
+                    
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(send_processing_error_notification(
+                                step_name="Azure OpenAI Document Classification",
+                                error=e,
+                                additional_context={
+                                    "ocr_file": str(ocr_json_path),
+                                    "pages_to_classify": len(user_prompt.get('Pages', [])),
+                                    "model": AZURE_OAI_DEPLOYMENT_NAME,
+                                    "api_version": AZURE_OAI_API_VERSION
+                                },
+                                logger=notification_logger
+                            ))
+                        else:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(send_processing_error_notification(
+                                step_name="Azure OpenAI Document Classification",
+                                error=e,
+                                additional_context={
+                                    "ocr_file": str(ocr_json_path),
+                                    "pages_to_classify": len(user_prompt.get('Pages', [])),
+                                    "model": AZURE_OAI_DEPLOYMENT_NAME,
+                                    "api_version": AZURE_OAI_API_VERSION
+                                },
+                                logger=notification_logger
+                            ))
+                            loop.close()
+                    except RuntimeError:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(send_processing_error_notification(
+                                step_name="Azure OpenAI Document Classification",
+                                error=e,
+                                additional_context={
+                                    "ocr_file": str(ocr_json_path),
+                                    "pages_to_classify": len(user_prompt.get('Pages', [])),
+                                    "model": AZURE_OAI_DEPLOYMENT_NAME,
+                                    "api_version": AZURE_OAI_API_VERSION
+                                },
+                                logger=notification_logger
+                            ))
+                            loop.close()
+                        except Exception as notification_error:
+                            _log_if_available('log_error', f'Failed to send error notification: {str(notification_error)}')
+                            
+                except Exception as notification_error:
+                    _log_if_available('log_error', f'Failed to send error notification: {str(notification_error)}')
+            
             raise RuntimeError(f"Azure OpenAI API call failed: {e}") from e
 
     # Process API response

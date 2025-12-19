@@ -24,6 +24,12 @@ from services.document_classifier import classify_document_from_ocr_json
 from services.final_document_builder import build_final_documents_from_classification
 from services.customer_data_mapper import build_customer_updates_from_classification
 from services.logging_service import get_ocr_logger
+from utils.error_notification_service import send_processing_error_notification
+from utils.env_config import load_env_file
+from config.settings import PROJECT_ROOT
+
+# Load environment variables for email configuration
+load_env_file(PROJECT_ROOT / "config" / "mail.env")
 
 
 
@@ -275,6 +281,78 @@ def main():
                 else:
                     print(f"\n[ERROR] Processing failed for RequestId={request_id}: {str(e)}")
                     traceback.print_exc()
+                
+                # Send error notification
+                try:
+                    import asyncio
+                    
+                    error_context = {
+                        "submission_id": submission_id,
+                        "request_id": request_id,
+                        "priority_level": priority_level,
+                        "documents_processed": len(processed_docs) if 'processed_docs' in locals() else 0,
+                        "processing_stage": "Main OCR Processing Pipeline"
+                    }
+                    
+                    # Determine processing step based on local variables
+                    if 'merged_pdf_path' not in locals():
+                        step_name = "Document Download & Merge"
+                    elif 'ocr_json_path' not in locals():
+                        step_name = "Azure Document Intelligence OCR"
+                    elif 'classified_json_path' not in locals():
+                        step_name = "AI Document Classification"
+                    elif 'final_docs' not in locals():
+                        step_name = "Final Document Generation"
+                    elif 'rows_to_insert' not in locals():
+                        step_name = "Document Upload"
+                    else:
+                        step_name = "Customer Data Processing"
+                    
+                    error_context["failed_step"] = step_name
+                    
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.create_task(send_processing_error_notification(
+                                step_name=step_name,
+                                error=e,
+                                submission_id=submission_id,
+                                request_id=request_id,
+                                additional_context=error_context,
+                                logger=logger
+                            ))
+                        else:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(send_processing_error_notification(
+                                step_name=step_name,
+                                error=e,
+                                submission_id=submission_id,
+                                request_id=request_id,
+                                additional_context=error_context,
+                                logger=logger
+                            ))
+                            loop.close()
+                    except RuntimeError:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(send_processing_error_notification(
+                                step_name=step_name,
+                                error=e,
+                                submission_id=submission_id,
+                                request_id=request_id,
+                                additional_context=error_context,
+                                logger=logger
+                            ))
+                            loop.close()
+                        except Exception as notification_error:
+                            if logger:
+                                logger.log_error(f"Failed to send error notification: {str(notification_error)}")
+                            
+                except Exception as notification_error:
+                    if logger:
+                        logger.log_error(f"Failed to send error notification: {str(notification_error)}")
                 
                 # Mark OCR processing as failed
                 try:

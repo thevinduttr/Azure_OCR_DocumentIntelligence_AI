@@ -21,6 +21,14 @@ try:
 except ImportError:
     _logger_available = False
 
+# Import error notification service
+try:
+    from utils.error_notification_service import send_azure_di_error_notification
+    from utils.azure_di_error_handler import handle_azure_di_error
+    _error_notification_available = True
+except ImportError:
+    _error_notification_available = False
+
 def _log_if_available(func_name, *args, **kwargs):
     """Helper to log if logger is available."""
     if _logger_available:
@@ -95,6 +103,40 @@ def analyze_processed_pdf(pdf_path: Path) -> Path:
         with pdf_path.open("rb") as f:
             pdf_content = f.read()
             
+        # Log PDF content info
+        _log_if_available('log_info', f'PDF content size: {len(pdf_content)} bytes')
+        
+        # Validate PDF content before sending to Azure DI
+        if len(pdf_content) == 0:
+            raise ValueError("PDF file is empty (0 bytes)")
+        
+        # Basic PDF header validation
+        if not pdf_content.startswith(b'%PDF-'):
+            raise ValueError("File does not appear to be a valid PDF (missing PDF header)")
+        
+        # Try to validate PDF structure using pypdf
+        try:
+            from pypdf import PdfReader
+            import io
+            
+            # Create a file-like object from bytes
+            pdf_stream = io.BytesIO(pdf_content)
+            reader = PdfReader(pdf_stream)
+            
+            page_count = len(reader.pages)
+            _log_if_available('log_info', f'PDF validation: {page_count} pages detected')
+            
+            if page_count == 0:
+                raise ValueError("PDF contains 0 pages - document may be corrupted")
+            
+            # Check for encrypted PDF
+            if reader.is_encrypted:
+                _log_if_available('log_warning', 'PDF is encrypted - this may cause Azure DI processing issues')
+                
+        except Exception as pdf_validation_error:
+            _log_if_available('log_warning', f'PDF validation failed: {str(pdf_validation_error)}')
+            _log_if_available('log_info', 'Proceeding with Azure DI call despite validation warning')
+            
         poller = client.begin_analyze_document(
             model_id=AZURE_DI_LAYOUT_MODEL_ID,
             body=pdf_content,
@@ -115,7 +157,80 @@ def analyze_processed_pdf(pdf_path: Path) -> Path:
         api_duration_ms = int((time.time() - start_time) * 1000) if 'api_start_time' not in locals() else int((time.time() - api_start_time) * 1000)
         _log_if_available('log_api_call', 'Azure Document Intelligence', 'analyze_document', 'POST', None, api_duration_ms)
         _log_if_available('log_error', f'Azure Document Intelligence API call failed: {str(e)}', e)
-        raise
+        
+        # Handle Azure Document Intelligence error with specialized handler
+        if _error_notification_available:
+            try:
+                # Get logger for error handling
+                notification_logger = get_ocr_logger() if _logger_available else None
+                
+                # Use specialized Azure DI error handler
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If event loop is running, schedule both error analysis and notification
+                        async def handle_error_and_notify():
+                            await handle_azure_di_error(
+                                error=e,
+                                pdf_path=pdf_path,
+                                logger=notification_logger
+                            )
+                            await send_azure_di_error_notification(
+                                error=e,
+                                pdf_path=pdf_path,
+                                logger=notification_logger
+                            )
+                        asyncio.create_task(handle_error_and_notify())
+                    else:
+                        # If no event loop is running, run the coroutine
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        error_analysis = loop.run_until_complete(handle_azure_di_error(
+                            error=e,
+                            pdf_path=pdf_path,
+                            logger=notification_logger
+                        ))
+                        
+                        # Send notification after error analysis
+                        loop.run_until_complete(send_azure_di_error_notification(
+                            error=e,
+                            pdf_path=pdf_path,
+                            logger=notification_logger
+                        ))
+                        loop.close()
+                        
+                        # Log error analysis results
+                        if error_analysis.get("recovery_successful"):
+                            _log_if_available('log_info', 'Error recovery was successful')
+                        else:
+                            _log_if_available('log_warning', 'Error recovery was not successful')
+                        
+                except RuntimeError:
+                    # If we can't get an event loop, try to create a new one
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        error_analysis = loop.run_until_complete(handle_azure_di_error(
+                            error=e,
+                            pdf_path=pdf_path,
+                            logger=notification_logger
+                        ))
+                        
+                        # Send notification after error analysis
+                        loop.run_until_complete(send_azure_di_error_notification(
+                            error=e,
+                            pdf_path=pdf_path,
+                            logger=notification_logger
+                        ))
+                        loop.close()
+                    except Exception as handler_error:
+                        _log_if_available('log_error', f'Failed to handle Azure DI error: {str(handler_error)}')
+                        
+            except Exception as handler_error:
+                _log_if_available('log_error', f'Failed to handle Azure DI error: {str(handler_error)}')
+        
+        raise RuntimeError(f'Azure Document Intelligence API call failed: {str(e)}') from e
 
     # Process OCR results
     _log_if_available('log_info', 'Processing OCR results...')
