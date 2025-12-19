@@ -22,12 +22,15 @@ class OCRErrorNotificationService:
     """
     Comprehensive error notification service for OCR processing system.
     Handles Azure Document Intelligence API errors and other processing failures
-    with detailed error analysis and email notifications.
+    with batched email notifications.
     """
     
     def __init__(self):
         self.error_counts = {}
         self.last_notification_time = {}
+        self.error_batch = []  # Store errors to batch together
+        self.batch_timeout = 10  # Send batch after 10 seconds (faster response)
+        self.batch_timer = None
     
     def get_error_description(self, error: Exception, context: str = "") -> Dict[str, Any]:
         """
@@ -208,6 +211,154 @@ class OCRErrorNotificationService:
         
         return error_info
     
+    def add_error_to_batch(
+        self,
+        error: Exception,
+        context: str = "",
+        submission_id: Optional[int] = None,
+        request_id: Optional[int] = None,
+        additional_info: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None
+    ) -> None:
+        """Add error to batch for consolidated notification."""
+        error_details = self.get_error_description(error, context)
+        
+        batch_item = {
+            "error": error,
+            "context": context,
+            "submission_id": submission_id,
+            "request_id": request_id,
+            "additional_info": additional_info or {},
+            "error_details": error_details,
+            "timestamp": time.strftime("%H:%M:%S")
+        }
+        
+        self.error_batch.append(batch_item)
+        
+        # Start/restart batch timer
+        if self.batch_timer:
+            self.batch_timer.cancel()
+        
+        self.batch_timer = asyncio.get_event_loop().call_later(
+            self.batch_timeout, 
+            lambda: asyncio.create_task(self.send_batched_notification(logger))
+        )
+    
+    async def send_batched_notification(self, logger: Optional[logging.Logger] = None) -> None:
+        """Send a single consolidated email for all batched errors."""
+        if not self.error_batch:
+            return
+        
+        try:
+            # Build email configuration from config.ini
+            import configparser
+            config_path = Path("config.ini")
+            config = configparser.ConfigParser()
+            if config_path.exists():
+                config.read(config_path)
+                
+            if not config.getboolean("EMAIL", "send_emails", fallback=False):
+                return
+            
+            recipients = [r.strip() for r in config.get("EMAIL", "recipient_emails", fallback="").split(",") if r.strip()]
+            if not recipients:
+                return
+            
+            # Create modern, concise email
+            error_count = len(self.error_batch)
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Group errors by category for better organization
+            error_groups = {}
+            for item in self.error_batch:
+                category = item["error_details"].get("category", "UNKNOWN")
+                if category not in error_groups:
+                    error_groups[category] = []
+                error_groups[category].append(item)
+            
+            subject = f"🚨 OCR System Alert - {error_count} Error{'s' if error_count > 1 else ''} Detected"
+            
+            body_parts = [
+                f"📅 Time: {current_time}",
+                f"⚠️  Total Errors: {error_count}",
+                "",
+                "📋 ERROR SUMMARY",
+                "=" * 50
+            ]
+            
+            for category, items in error_groups.items():
+                category_name = category.replace("_", " ").title()
+                body_parts.extend([
+                    f"",
+                    f"🔸 {category_name} ({len(items)} error{'s' if len(items) > 1 else ''})"
+                ])
+                
+                for i, item in enumerate(items[:3], 1):  # Show max 3 errors per category
+                    error_msg = str(item["error"])[:100] + "..." if len(str(item["error"])) > 100 else str(item["error"])
+                    body_parts.append(f"   {i}. {item['timestamp']} - {error_msg}")
+                    if item["submission_id"]:
+                        body_parts.append(f"      ID: {item['submission_id']}")
+                
+                if len(items) > 3:
+                    body_parts.append(f"   ... and {len(items) - 3} more")
+            
+            # Add quick action summary
+            body_parts.extend([
+                "",
+                "🔧 QUICK ACTIONS",
+                "=" * 50
+            ])
+            
+            action_summary = set()
+            for item in self.error_batch:
+                for action in item["error_details"].get("recommended_actions", [])[:2]:  # Top 2 actions
+                    action_summary.add(action[:80] + "..." if len(action) > 80 else action)
+            
+            for i, action in enumerate(sorted(action_summary)[:5], 1):  # Max 5 actions
+                body_parts.append(f"{i}. {action}")
+            
+            body_parts.extend([
+                "",
+                "📞 Need Help? Contact the development team",
+                f"🕒 Next check in 30 minutes if issues persist"
+            ])
+            
+            body = "\n".join(body_parts)
+            
+            # Send consolidated notification
+            email_cfg = {
+                "recipients": {
+                    "to": recipients,
+                    "cc": [],
+                    "bcc": []
+                }
+            }
+            
+            await mailer.send_email_async(
+                email_cfg,
+                subject=subject,
+                body=body,
+                logger=logger
+            )
+            
+            if logger:
+                if hasattr(logger, 'log_info'):
+                    logger.log_info(f"Sent consolidated error notification for {error_count} errors")
+                elif hasattr(logger, 'info'):
+                    logger.info(f"Sent consolidated error notification for {error_count} errors")
+        
+        except Exception as e:
+            if logger:
+                if hasattr(logger, 'log_error'):
+                    logger.log_error(f"Failed to send batched error notification: {str(e)}", e)
+                elif hasattr(logger, 'error'):
+                    logger.error(f"Failed to send batched error notification: {str(e)}")
+        
+        finally:
+            # Clear batch after sending
+            self.error_batch = []
+            self.batch_timer = None
+    
     async def send_error_notification(
         self,
         error: Exception,
@@ -218,167 +369,31 @@ class OCRErrorNotificationService:
         logger: Optional[logging.Logger] = None
     ) -> None:
         """
-        Send detailed error notification email to support team.
-        
-        Args:
-            error: The exception that occurred
-            context: Context where the error occurred (e.g., "OCR Processing", "Document Merge")
-            submission_id: ID of the submission being processed
-            request_id: ID of the request
-            additional_info: Additional context information
-            logger: Logger instance for logging
+        Add error to batch for consolidated notification instead of sending immediately.
+        This ensures multiple errors get batched together into a single, modern email.
         """
-        try:
-            # Get detailed error analysis
-            error_details = self.get_error_description(error, context)
-            
-            # Prepare email content
-            subject = f"🚨 OCR Processing Error - {error_details['category']} ({error_details['severity']})"
-            
-            # Build detailed error report
-            body_parts = [
-                "=" * 80,
-                "OCR PROCESSING ERROR NOTIFICATION",
-                "=" * 80,
-                "",
-                f"📅 Timestamp: {error_details['timestamp']}",
-                f"🔥 Severity: {error_details['severity']}",
-                f"📂 Category: {error_details['category']}",
-                f"🎯 Context: {context}",
-                ""
-            ]
-            
-            if submission_id:
-                body_parts.append(f"📋 Submission ID: {submission_id}")
-            if request_id:
-                body_parts.append(f"🆔 Request ID: {request_id}")
-            
-            body_parts.extend([
-                "",
-                "🚫 ERROR DETAILS",
-                "-" * 40,
-                f"Error Type: {error_details['error_type']}",
-                f"Error Message: {error_details['error_message']}",
-                ""
-            ])
-            
-            if "root_cause" in error_details:
-                body_parts.extend([
-                    f"🔍 Root Cause: {error_details['root_cause']}",
-                    f"📝 Description: {error_details['description']}",
-                    ""
-                ])
-            
-            if error_details.get("likely_causes"):
-                body_parts.extend([
-                    "🤔 LIKELY CAUSES",
-                    "-" * 40
-                ])
-                for i, cause in enumerate(error_details["likely_causes"], 1):
-                    body_parts.append(f"{i}. {cause}")
-                body_parts.append("")
-            
-            if error_details.get("recommended_actions"):
-                body_parts.extend([
-                    "💡 RECOMMENDED ACTIONS",
-                    "-" * 40
-                ])
-                for i, action in enumerate(error_details["recommended_actions"], 1):
-                    body_parts.append(f"{i}. {action}")
-                body_parts.append("")
-            
-            # Technical details
-            if error_details.get("technical_details"):
-                body_parts.extend([
-                    "🔧 TECHNICAL DETAILS",
-                    "-" * 40
-                ])
-                for key, value in error_details["technical_details"].items():
-                    body_parts.append(f"{key.replace('_', ' ').title()}: {value}")
-                body_parts.append("")
-            
-            # Additional context
-            if additional_info:
-                body_parts.extend([
-                    "📊 ADDITIONAL INFORMATION",
-                    "-" * 40
-                ])
-                for key, value in additional_info.items():
-                    body_parts.append(f"{key.replace('_', ' ').title()}: {value}")
-                body_parts.append("")
-            
-            # Stack trace
-            body_parts.extend([
-                "🔍 STACK TRACE",
-                "-" * 40,
-                traceback.format_exc(),
-                "",
-                "=" * 80,
-                "Please review this error and take appropriate action.",
-                "Contact the development team if you need assistance.",
-                "=" * 80
-            ])
-            
-            body = "\n".join(body_parts)
-            
-            # Send notification - use only direct mailer to avoid duplicates
-            try:
-                # Build email configuration from config.ini
-                import configparser
-                config_path = Path("config.ini")
-                config = configparser.ConfigParser()
-                if config_path.exists():
-                    config.read(config_path)
-                    
-                if config.getboolean("EMAIL", "send_emails", fallback=False):
-                    recipients = [r.strip() for r in config.get("EMAIL", "recipient_emails", fallback="").split(",") if r.strip()]
-                    
-                    if recipients:
-                        email_cfg = {
-                            "recipients": {
-                                "to": recipients,
-                                "cc": [],
-                                "bcc": []
-                            }
-                        }
-                        
-                        await mailer.send_email_async(
-                            email_cfg,
-                            subject=subject,
-                            body=body,
-                            logger=logger
-                        )
-                        
-                        if logger:
-                            if hasattr(logger, 'log_info'):
-                                logger.log_info(f"Error notification sent for {error_details['category']} error")
-                            elif hasattr(logger, 'info'):
-                                logger.info(f"Error notification sent for {error_details['category']} error")
-                    else:
-                        if logger:
-                            if hasattr(logger, 'log_warning'):
-                                logger.log_warning("No email recipients configured - error notification not sent")
-                            elif hasattr(logger, 'warning'):
-                                logger.warning("No email recipients configured - error notification not sent")
-                else:
-                    if logger:
-                        if hasattr(logger, 'log_info'):
-                            logger.log_info("Email notifications disabled - error notification not sent")
-                        elif hasattr(logger, 'info'):
-                            logger.info("Email notifications disabled - error notification not sent")
-                            
-            except Exception as email_error:
-                if logger:
-                    if hasattr(logger, 'log_error'):
-                        logger.log_error(f"Failed to send error notification email: {str(email_error)}", email_error)
-                    elif hasattr(logger, 'error'):
-                        logger.error(f"Failed to send error notification email: {str(email_error)}")
-        except Exception as notify_error:
-            if logger:
-                if hasattr(logger, 'log_error'):
-                    logger.log_error(f"Failed to send error notification: {str(notify_error)}", notify_error)
-                elif hasattr(logger, 'error'):
-                    logger.error(f"Failed to send error notification: {str(notify_error)}")
+        self.add_error_to_batch(
+            error=error,
+            context=context,
+            submission_id=submission_id,
+            request_id=request_id,
+            additional_info=additional_info,
+            logger=logger
+        )
+        
+        if logger:
+            if hasattr(logger, 'log_info'):
+                logger.log_info(f"Error added to notification batch: {type(error).__name__}")
+            elif hasattr(logger, 'info'):
+                logger.info(f"Error added to notification batch: {type(error).__name__}")
+
+    async def force_send_batch(self, logger: Optional[logging.Logger] = None) -> None:
+        """Force immediate sending of batched errors (useful for testing or critical errors)."""
+        if self.batch_timer:
+            self.batch_timer.cancel()
+            self.batch_timer = None
+        
+        await self.send_batched_notification(logger)
     
     async def notify_azure_di_error(
         self,
