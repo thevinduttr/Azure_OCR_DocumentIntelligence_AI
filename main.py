@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 import traceback
 import json
+import asyncio
 from collections import Counter
 
 from config.settings import RAW_DOCUMENTS_DIR, PROCESSED_PDF_PATH , DATA_DIR
@@ -16,6 +17,9 @@ from services.db_service import (
     update_customers_fields,
     update_customers_ocr_status,
     execute_customer_validations,
+    get_customer_validation_status,
+    check_portal_status_failures,
+    get_validation_failure_details,
 )
 from services.blob_service import download_blob_to_file, upload_file_to_blob
 from services.document_merger import merge_documents_to_pdf
@@ -25,6 +29,7 @@ from services.final_document_builder import build_final_documents_from_classific
 from services.customer_data_mapper import build_customer_updates_from_classification
 from services.logging_service import get_ocr_logger
 from utils.error_notification_service import send_processing_error_notification
+from utils.validation_notification_service import send_validation_failure_notification
 from utils.env_config import load_env_file
 from config.settings import PROJECT_ROOT
 
@@ -102,7 +107,7 @@ def extract_parent_prefix_from_blob_path(blob_path: str) -> str:
     return parts[0] if len(parts) > 1 else ""
 
 
-def main():
+async def main():
     print("[INFO] Starting continuous OCR processing service...")
     
     while True:
@@ -284,6 +289,78 @@ def main():
                     logger.log_step("Customer Validation", "Validation failed but continuing", "FAILED")
                     # Don't mark OCR as failed - validation is separate from OCR processing
                 
+                # 15) Check validation status and handle failures
+                logger.log_step("Validation Status Check", "Checking customer validation status")
+                try:
+                    validation_status = get_customer_validation_status(request_id=request_id)
+                    
+                    if validation_status and validation_status.get("ValidationStatus") == "FAILED":
+                        logger.log_warning(f"Customer validation status is FAILED for RequestId={request_id}")
+                        logger.log_step("Validation Status Check", "Validation status is FAILED - checking for portal failures", "FAILED")
+                        
+                        # Check for portal status failures
+                        logger.log_step("Portal Status Check", "Checking for portal status failures")
+                        portal_failures = check_portal_status_failures(request_id=request_id)
+                        
+                        if portal_failures:
+                            logger.log_warning(f"Found {len(portal_failures)} portal status failures for RequestId={request_id}")
+                            logger.log_step("Portal Status Check", f"Found {len(portal_failures)} portal failures", "FAILED")
+                            
+                            # Get detailed validation failure information
+                            logger.log_step("Validation Details", "Retrieving validation failure details")
+                            validation_failures = get_validation_failure_details(request_id=request_id)
+                            
+                            if validation_failures:
+                                logger.log_warning(f"Found {len(validation_failures)} validation rule violations for RequestId={request_id}")
+                                logger.log_step("Validation Details", f"Found {len(validation_failures)} validation rule violations", "COMPLETED")
+                                
+                                # Log detailed validation failures
+                                for failure in validation_failures:
+                                    logger.log_warning(f"Validation Rule '{failure.get('ValidationRule', 'Unknown')}': {failure.get('ValidationError', 'No error message')}")
+                                
+                                # Send validation failure notification email
+                                logger.log_step("Validation Notification", "Sending validation failure notification email")
+                                try:
+                                    await send_validation_failure_notification(
+                                        request_id=request_id,
+                                        submission_id=submission_id,
+                                        validation_failures=validation_failures,
+                                        portal_failures=portal_failures,
+                                        logger=logger
+                                    )
+                                    logger.log_step("Validation Notification", "Validation failure notification sent successfully", "COMPLETED")
+                                    logger.log_info(f"Validation failure notification sent for RequestId={request_id} with {len(validation_failures)} rule violations")
+                                    
+                                except Exception as email_error:
+                                    error_msg = f"Failed to send validation failure notification for RequestId={request_id}: {str(email_error)}"
+                                    logger.log_error(error_msg, email_error)
+                                    logger.log_step("Validation Notification", "Failed to send notification email", "FAILED")
+                                    # Don't fail the entire process for email notification failures
+                                    
+                            else:
+                                logger.log_info(f"No validation failure details found for RequestId={request_id}")
+                                logger.log_step("Validation Details", "No validation failure details found", "COMPLETED")
+                        else:
+                            logger.log_info(f"No portal status failures found for RequestId={request_id}")
+                            logger.log_step("Portal Status Check", "No portal failures found", "COMPLETED")
+                    
+                    elif validation_status and validation_status.get("ValidationStatus") == "SUCCESS":
+                        logger.log_info(f"Customer validation status is SUCCESS for RequestId={request_id}")
+                        logger.log_step("Validation Status Check", "Validation status is SUCCESS", "COMPLETED")
+                    
+                    else:
+                        if not validation_status:
+                            logger.log_warning(f"No validation status found for RequestId={request_id}")
+                        else:
+                            logger.log_info(f"Customer validation status for RequestId={request_id}: {validation_status.get('ValidationStatus', 'Unknown')}")
+                        logger.log_step("Validation Status Check", "Validation status retrieved", "COMPLETED")
+                        
+                except Exception as status_check_error:
+                    error_msg = f"Failed to check validation status for RequestId={request_id}: {str(status_check_error)}"
+                    logger.log_error(error_msg, status_check_error)
+                    logger.log_step("Validation Status Check", "Failed to check validation status", "FAILED")
+                    # Don't fail the entire process for validation status check failures
+                
                 logger.complete_request_logging("SUCCESS")
                 
             except Exception as e:
@@ -401,4 +478,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

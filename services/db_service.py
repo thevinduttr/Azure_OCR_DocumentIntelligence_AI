@@ -588,3 +588,186 @@ def execute_customer_validations(request_id: int) -> None:
                 conn.close()
             except:
                 pass
+
+
+def get_customer_validation_status(request_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get the customer validation status for a specific RequestId.
+    
+    Args:
+        request_id: The RequestId to check
+        
+    Returns:
+        Dict with Id, RequestId, and ValidationStatus or None if not found
+    """
+    _log_if_available('log_database_operation', 'SELECT', 'Customers', f'Checking validation status for RequestId={request_id}')
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = """
+        SELECT TOP (1) 
+            Id,
+            RequestId,
+            ValidationStatus
+        FROM [dbo].[Customers]
+        WHERE RequestId = ?
+        """
+        
+        _log_if_available('log_database_query', sql, (request_id,), None)
+        cursor.execute(sql, (request_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            result = {
+                "Id": row[0],
+                "RequestId": row[1],
+                "ValidationStatus": row[2],
+            }
+            _log_if_available('log_info', f'Customer validation status for RequestId={request_id}: {result["ValidationStatus"]}')
+            return result
+        else:
+            _log_if_available('log_warning', f'No customer record found for RequestId={request_id}')
+            return None
+            
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to get customer validation status for RequestId={request_id}: {str(e)}', e)
+        raise
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
+def check_portal_status_failures(request_id: int) -> List[Dict[str, Any]]:
+    """
+    Check if there are any portal status failures for a RequestId.
+    
+    Args:
+        request_id: The RequestId to check
+        
+    Returns:
+        List of dictionaries with RequestId, PortalName, and Status
+    """
+    _log_if_available('log_database_operation', 'SELECT', 'RequestsPortalStatus', f'Checking portal status failures for RequestId={request_id}')
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = """
+        SELECT 
+            RequestId,
+            PortalName,
+            Status
+        FROM [dbo].[RequestsPortalStstus]
+        WHERE RequestId = ? 
+          AND PortalName = 'AllPortals'
+          AND Status = 'FAILED'
+        """
+        
+        _log_if_available('log_database_query', sql, (request_id,), None)
+        cursor.execute(sql, (request_id,))
+        rows = cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            results.append({
+                "RequestId": row[0],
+                "PortalName": row[1],
+                "Status": row[2],
+            })
+        
+        _log_if_available('log_info', f'Found {len(results)} portal status failures for RequestId={request_id}')
+        return results
+            
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to check portal status failures for RequestId={request_id}: {str(e)}', e)
+        raise
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
+def get_validation_failure_details(request_id: int) -> List[Dict[str, Any]]:
+    """
+    Get detailed validation failure information for a RequestId.
+    
+    Args:
+        request_id: The RequestId to check
+        
+    Returns:
+        List of dictionaries with Id, RequestId, ValidationRule, and ValidationError
+    """
+    _log_if_available('log_database_operation', 'SELECT', 'RequestsValidationFailures', f'Getting validation failure details for RequestId={request_id}')
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        
+        sql = """
+        SELECT 
+            Id,
+            RequestId,
+            ValidationRule,
+            ValidationError
+        FROM [dbo].[RequestsValidationFailures]
+        WHERE RequestId = ?
+        ORDER BY Id
+        """
+        
+        _log_if_available('log_database_query', sql, (request_id,), None)
+        cursor.execute(sql, (request_id,))
+        rows = cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            results.append({
+                "Id": row[0],
+                "RequestId": row[1],
+                "ValidationRule": row[2],
+                "ValidationError": row[3],
+            })
+        
+        _log_if_available('log_info', f'Found {len(results)} validation failure details for RequestId={request_id}')
+        return results
+            
+    except Exception as e:
+        _log_if_available('log_error', f'Failed to get validation failure details for RequestId={request_id}: {str(e)}', e)
+        raise
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
