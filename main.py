@@ -272,6 +272,18 @@ def main():
                 update_customers_ocr_status(request_id=request_id, status="SUCCESS")
                 logger.log_step("Status Update", "OCR status updated to SUCCESS", "COMPLETED")
                 
+                # 14) Execute customer validations stored procedure
+                logger.log_step("Customer Validation", "Executing customer validation procedures")
+                try:
+                    execute_customer_validations(request_id=request_id)
+                    logger.log_step("Customer Validation", "Customer validations completed", "COMPLETED")
+                    logger.log_info(f"Customer validations executed successfully for RequestId={request_id}")
+                except Exception as validation_error:
+                    error_msg = f"Customer validation failed for RequestId={request_id}: {str(validation_error)}"
+                    logger.log_warning(error_msg)
+                    logger.log_step("Customer Validation", "Validation failed but continuing", "FAILED")
+                    # Don't mark OCR as failed - validation is separate from OCR processing
+                
                 logger.complete_request_logging("SUCCESS")
                 
             except Exception as e:
@@ -366,23 +378,7 @@ def main():
                         logger.log_error(error_msg, update_error)
                     else:
                         print(f"[ERROR] {error_msg}")
-            
-            # 14) Execute customer validations stored procedure (outside try-except)
-            try:
-                if logger:
-                    logger.log_step("Customer Validation", "Executing customer validation procedures")
-                execute_customer_validations(request_id=request_id)
-                if logger:
-                    logger.log_step("Customer Validation", "Customer validations completed", "COMPLETED")
-                    logger.log_info(f"Customer validations executed successfully for RequestId={request_id}")
-            except Exception as validation_error:
-                error_msg = f"Customer validation failed for RequestId={request_id}: {str(validation_error)}"
-                if logger:
-                    logger.log_warning(error_msg)
-                    logger.log_step("Customer Validation", "Validation failed but continuing", "FAILED")
-                else:
-                    print(f"[WARN] {error_msg}")
-                # Don't mark OCR as failed - validation is separate from OCR processing
+
             
             # Small delay before processing next submission
             time.sleep(2)
