@@ -548,14 +548,27 @@ def execute_customer_validations(request_id: int) -> None:
     """
     _log_if_available('log_database_operation', 'EXEC', 'ExecuteAllCustomerValidations', f'Running validations for RequestId={request_id}')
     
-    conn = _get_db_connection()
-    cursor = conn.cursor()
+    conn = None
+    cursor = None
+    
     try:
+        # Get a fresh database connection with proper settings
+        conn = _get_db_connection()
+        
+        # Set connection to autocommit mode to avoid transaction context issues
+        conn.autocommit = True
+        
+        cursor = conn.cursor()
+        
         stored_proc = "EXEC ExecuteAllCustomerValidations @RequestId = ?"
         _log_if_available('log_database_query', stored_proc, (request_id,), None)
         
+        # Execute the stored procedure
         cursor.execute(stored_proc, (request_id,))
-        conn.commit()
+        
+        # Process any results from the stored procedure (if any)
+        while cursor.nextset():
+            pass
         
         _log_if_available('log_database_operation', 'EXEC', 'ExecuteAllCustomerValidations', 
                          f'Successfully executed customer validations for RequestId={request_id}')
@@ -565,5 +578,13 @@ def execute_customer_validations(request_id: int) -> None:
         _log_if_available('log_error', f'Failed to execute customer validations for RequestId={request_id}: {str(e)}', e)
         raise
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
