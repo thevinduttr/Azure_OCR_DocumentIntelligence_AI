@@ -63,6 +63,8 @@ data/ai_output/*
 # ========================
 # Never commit credentials
 config/*.yml
+config/*.env
+config/*.json
 !config/paths.yml      # Allowed (no secrets)
 !config/settings.py     # Allowed
 !config/__init__.py
